@@ -116,64 +116,6 @@ If you're not using uv, just replace `uv run pdf-reader` with `python pdf_reader
 Each page reports the method used (`text`, `ocr`, or `empty`), the character
 count, and (where present) the number of tables and rows found.
 
-### Common JSON schema (one file per PDF)
-
-When you pass `--dump-json out/`, each input PDF produces `out/<stem>.json`
-with this shape:
-
-```json
-{
-  "file": "samples/m2602757signed.pdf",
-  "page_count": 3,
-  "metadata": { "Producer": "PDFium", "CreationDate": "D:20260519150923" },
-  "pages": [
-    {
-      "page_number": 1,
-      "method": "text",
-      "char_count": 5375,
-      "fields": {
-        "work_order_no": "M2602757",
-        "date": "19-MAY-2026",
-        "project_no": "S220466MPTS",
-        "project_name": "SVP National Police Academy",
-        "name": "Aeologic Technologies Pvt. Ltd.",
-        "address": "Block C-324,25,26,27 3rd Floor, ...",
-        "contact_person": "Vikrant Kumar",
-        "phone_no": "9873759782",
-        "email_id": "hr.support@aeologic.com",
-        "subject": "Work-Order for providing Office Support and Project Management Support and Rollout Services as mentioned above."
-      },
-      "tables": [
-        [
-          {
-            "s_no": "1",
-            "hsn_sac_code": "998313",
-            "description": "Software Application Support Engineer (4 to less than 6 years relevant experience)-3rd year 2nd Increment",
-            "no_of_persons_required": "2",
-            "required_period_no_of_months_days": "Three Month(s) and Nineteen Day(s)",
-            "unit_rate_per_month_excluding_taxes": "44,042.14",
-            "date_of_deployment_from_to": "09/02/2026 To 27/05/2026",
-            "total_amount_axbxc": "3,15,804.47",
-            "igst_pct_amount": "18.00% 56,844.80"
-          }
-        ]
-      ],
-      "error": null
-    }
-  ],
-  "error": null
-}
-```
-
-The same schema is produced for every PDF — text-based or scanned. Scanned
-pages have `"method": "ocr"` and `"tables": []` since OCR output has no
-inherent cell structure.
-
-> The raw per-page `text` field is **excluded** from JSON output by default
-> (it's bulky and structured data is what you usually want). If you need
-> it, pass `--include-text` to put it back in. The full text is also
-> available as separate `.txt` files via `--dump-text DIR`.
-
 ### `fields` — structured key-value pairs
 
 Most PDFs have a header box at the top with label/value pairs (Work Order No,
