@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.python-version
+out/
+dist/
+*.egg-info/
+.DS_Store
+
+# Real / sensitive PDFs — keep these out of source control.
+# Use samples/.gitkeep to preserve the empty folder structure if desired.
+samples/*.pdf
+samples/*.PDF
