@@ -54,6 +54,58 @@ You can also run the script directly without uv:
 python pdf_reader.py path/to/file.pdf
 ```
 
+## How it works
+
+```mermaid
+flowchart TD
+    A([uv run pdf-reader file.pdf]) --> B[Open PDF with pdfplumber]
+    B --> C[For each page...]
+
+    C --> D[page.extract_text → 'text']
+    D --> E[page.extract_tables]
+    E --> F{For each table}
+    F -- Key-value box --> G[Flatten into 'fields' dict]
+    F -- Data table --> H[Convert to row-dicts<br/>row 0 as snake_case keys<br/>drop letter rows]
+
+    G --> K{text ≥ 30 chars?}
+    H --> I{--split-tax-cells?}
+    I -- Yes --> J[Split combined tax cells<br/>X_pct_amount → X_pct + X_amount]
+    I -- No --> K
+    J --> K
+
+    K -- Yes --> L[method = 'text']
+    K -- No --> M[Render page as image<br/>pdf2image + poppler]
+    M --> N[OCR via pytesseract + tesseract]
+    N --> O[method = 'ocr']
+
+    L --> P[Regex-extract more fields<br/>Subject, GSTIN, Signature, Copy To]
+    O --> P
+
+    P --> Q{More pages?}
+    Q -- Yes --> C
+    Q -- No --> R{--include-text?}
+    R -- No --> S[Drop bulky 'text' field]
+    R -- Yes --> T[Keep 'text' field]
+
+    S --> U([Print JSON to stdout])
+    T --> U
+
+    style A fill:#1e88e5,color:#fff
+    style U fill:#43a047,color:#fff
+```
+
+| Step | What happens |
+|---|---|
+| Open PDF | `pdfplumber.open()` parses the file structure. |
+| Text extraction | `page.extract_text()` returns the page's text in reading order. |
+| Table extraction | `page.extract_tables()` returns each table as a list of rows. |
+| Classify each table | "Key-value box" (labels ending in `:`) → `fields`. Otherwise → `tables`. |
+| Tax-cell split | Optional: split `cgst_pct_amount` ("0.00% 0.00") into two fields. |
+| Text vs OCR | If text is < 30 chars, render the page as an image and run Tesseract. |
+| Regex fields | Pull `Subject`, `GSTIN`, signature block, `Copy To` list, etc. from text. |
+| Drop `text` | Excluded from JSON by default (use `--include-text` to keep). |
+| Output | Print structured JSON to stdout. |
+
 ## Use from Python
 
 ```python
