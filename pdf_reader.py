@@ -367,6 +367,154 @@ def _ocr_page(pdf_path: Path, page_number: int, dpi: int = 300) -> str:
     return pytesseract.image_to_string(images[0])
 
 
+# ---------------------------------------------------------------------------
+# NICSI MPR (Monthly Performance Report) — format-specific OCR-text parser
+# ---------------------------------------------------------------------------
+# Two layouts seen in the wild:
+#   Layout A — Group MPR: one designation, multiple numbered team members
+#              (e.g. "1. A.Siva Naga Prasad", "2. Gauraw Shrivastava")
+#   Layout B — Multi-row MPR: each employee on their own line starting with
+#              "<si_no> | <name> | ... <date> | <date> | <date>"
+#
+# Pure-regex extraction works better than bbox clustering for this format
+# because OCR badly interleaves the visual columns into the text stream.
+
+_MPR_DATE_HYPHEN = re.compile(r"\d{1,2}-[A-Z][a-z]{2}-\d{4}")
+_MPR_DATE_SLASH = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
+
+
+def _rejoin_split_dates(text: str) -> str:
+    """OCR sometimes splits "01-Apr-\\n2026" across lines. Stitch them back."""
+    text = re.sub(r"(\d{1,2}-[A-Z][a-z]{2}-)\s*\n?\s*(\d{4})", r"\1\2", text)
+    text = re.sub(r"(\d{1,2}/\d{1,2}/)\s*\n?\s*(\d{4})", r"\1\2", text)
+    return text
+
+
+def _extract_mpr_designation(text: str) -> str:
+    """Build a designation from atomic tokens (avoids grabbing interleaved column content).
+
+    Looks for known fragments anywhere in the text and stitches them together,
+    so OCR's interleaving of vertical column content can't pollute the result.
+    """
+    parts: list[str] = []
+    if m := re.search(r"\bLevel\s+\d+\b", text):
+        parts.append(m.group(0).strip())
+    elif re.search(r"Software\s+Application\s+Support\s+Engineer", text):
+        parts.append("Software Application Support Engineer")
+
+    if m := re.search(r"work\s+experience\s+(\d+)", text, re.IGNORECASE):
+        parts.append(f"(Minimum work experience {m.group(1)} years)")
+    elif m := re.search(r"(\d+)\s+to\s+less\s+than\s+(\d+)\s+years?", text, re.IGNORECASE):
+        parts.append(f"({m.group(1)} to less than {m.group(2)} years relevant experience)")
+
+    # "with Nth Increment" — "with N..." and "Increment" can be far apart in OCR
+    m_with = re.search(r"with\s+(\d+(?:st|nd|rd|th)?)\b", text)
+    has_inc = re.search(r"\bIncrement\b", text)
+    if m_with and has_inc:
+        parts.append(f"with {m_with.group(1)} Increment")
+    elif m := re.search(r"(\d+(?:st|nd|rd|th))\s+year\s+(\d+(?:st|nd|rd|th|[\"”]))\s+[Ii]ncrement", text):
+        parts.append(f"{m.group(1)} year {m.group(2)} Increment")
+
+    if m := re.search(r"Tier\s*-\s*\d+", text):
+        parts.append(f"— {m.group(0).strip()}")
+    return " ".join(parts)
+
+
+def _extract_mpr_period_dates(text: str) -> tuple[str, str]:
+    """Find "Working Period From / To" dates, including OCR-split forms like
+    "01-Apr- 30-Apr-\\n2026 2026" (stems on one line, years on another).
+    """
+    # First try a complete-date pair on adjacent positions
+    cleaned = _rejoin_split_dates(text)
+    pair_re = re.compile(
+        r"(\d{1,2}-[A-Z][a-z]{2}-\d{4})\s+(?:To\s+)?(\d{1,2}-[A-Z][a-z]{2}-\d{4})"
+    )
+    pair_slash = re.compile(
+        r"(\d{1,2}/\d{1,2}/\d{4})\s+(?:To\s+)?(\d{1,2}/\d{1,2}/\d{4})"
+    )
+    if m := pair_re.search(cleaned):
+        return (m.group(1), m.group(2))
+    if m := pair_slash.search(cleaned):
+        return (m.group(1), m.group(2))
+
+    # Stems on one line + years on next line pattern:
+    # "01-Apr- 30-Apr- <other text>\n<other text> 2026 2026"
+    # `(?<!\d)\d{4}(?!\d)` ensures we don't accidentally match "2" from "2nd Increment".
+    split_pair = re.compile(
+        r"(\d{1,2}-[A-Z][a-z]{2}-)\s+(\d{1,2}-[A-Z][a-z]{2}-)"
+        r".*?(?<!\d)(\d{4})(?!\d)\s+(?<!\d)(\d{4})(?!\d)",
+        re.DOTALL,
+    )
+    if m := split_pair.search(text):
+        return (m.group(1) + m.group(3), m.group(2) + m.group(4))
+    return ("", "")
+
+
+def _extract_mpr_table(text: str) -> list[dict[str, str | list[str]]]:
+    """Extract a NICSI MPR table from OCR text. Handles both group and multi-row layouts."""
+    cleaned = _rejoin_split_dates(text)
+
+    # Layout B: lines like "<si_no> [|] <Name…> ... <date> [|] <date> [|] <date>"
+    # Both `|` separators (after si_no AND between dates) may be missing in OCR.
+    # Name grows until just before "(" or a digit (so multi-word names like
+    # "Ch. Kiran" / "K Vijay" stay whole).
+    rows_b: list[dict[str, str | list[str]]] = []
+    for m in re.finditer(
+        r"^\s*(\d+)\s*\|?\s*([A-Z][\w.'\-\s]+?)\s*(?=[\(\d])"
+        r".*?"
+        r"(\d{1,2}/\d{1,2}/\d{4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{4})",
+        cleaned,
+        re.MULTILINE,
+    ):
+        rows_b.append({
+            "si_no": m.group(1).strip(),
+            "employee_name": m.group(2).strip().rstrip(".,; "),
+            "designation": _extract_mpr_designation(cleaned),
+            "date_of_joining": m.group(3),
+            "working_period_from": m.group(4),
+            "working_period_to": m.group(5),
+        })
+    if rows_b:
+        return rows_b
+
+    # Layout A: group format — one designation, multiple team members.
+    # Numbered names can appear anywhere on a line (NICSI OCR interleaves
+    # column content), but they reliably end at the line break.
+    members: list[str] = []
+    seen_nums: set[str] = set()
+    for m in re.finditer(
+        r"(\d+)[\.,]\s+([A-Z][\w.'\-]+(?:\s+[A-Z][\w.'\-]+)*)\s*(?=\n|$)",
+        text,
+        re.MULTILINE,
+    ):
+        num = m.group(1).strip()
+        name = m.group(2).strip()
+        if num in seen_nums:
+            continue
+        seen_nums.add(num)
+        members.append(f"{num}. {name}")
+
+    all_dates = _MPR_DATE_HYPHEN.findall(cleaned)
+    designation = _extract_mpr_designation(text)
+    period_from, period_to = _extract_mpr_period_dates(text)
+
+    # Date of joining = first complete date that isn't already used as a period date
+    used = {period_from, period_to}
+    date_of_joining = next((d for d in all_dates if d not in used), "")
+
+    if not (members or designation or all_dates):
+        return []
+
+    return [{
+        "si_no": "1",
+        "designation": designation,
+        "date_of_joining": date_of_joining,
+        "working_period_from": period_from,
+        "working_period_to": period_to,
+        "team_members": members,
+    }]
+
+
 def read_pdf(
     path: str | Path,
     ocr_fallback: bool = True,
@@ -434,6 +582,14 @@ def read_pdf(
                 if page_result.text:
                     for k, v in _extract_text_fields(page_result.text).items():
                         page_result.fields.setdefault(k, v)
+
+                # Format-specific table extraction for OCR'd NICSI MPR documents
+                if page_result.method == "ocr" and not page_result.tables:
+                    doc_type = (page_result.fields.get("document_type") or "").lower()
+                    if "monthly performance report" in doc_type:
+                        mpr_rows = _extract_mpr_table(page_result.text)
+                        if mpr_rows:
+                            page_result.tables.append(mpr_rows)
 
                 page_result.char_count = len(page_result.text)
                 result.pages.append(page_result)
