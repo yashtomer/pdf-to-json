@@ -184,15 +184,37 @@ def _kv_table_to_dict(table: list[list[str]]) -> dict[str, str]:
 
 _TEXT_FIELD_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("subject", re.compile(r"Subject\s*:\s*(.+?)(?:\n\s*\n|\n\s*Sir\b|$)", re.DOTALL)),
-    ("work_order_no", re.compile(r"Work Order No\s*:-?\s*(\S+)")),
+    ("work_order_no", re.compile(r"(?:Work\s+Order|Order\.)\s*No\.?\s*:-?\s*([A-Z]\d+)", re.IGNORECASE)),
     ("project_no", re.compile(r"Project No\.?\s*:-?\s*(\S+)")),
     ("po_no", re.compile(r"PO No\.?\s*:-?\s*(\S+)")),
     ("empanelment_no", re.compile(r"Empanelment No\s*:\s*(\S+)")),
     ("valid_till", re.compile(r"Valid Till\s*:\s*(\S+)")),
     ("gstin", re.compile(r"GSTIN(?:\s*No\.?)?(?:\s*of\s*\w+)?\s*:\s*([A-Z0-9]+)", re.IGNORECASE)),
     ("mpr_for_month", re.compile(r"MPR\s+for\s+the\s+Month\s*:\s*(.+?)(?:\s+(?:Work|Project)\b|\n|$)", re.IGNORECASE)),
-    ("document_type", re.compile(r"^\s*(Monthly Performance Report|Work Order|Purchase Order|Invoice)\b", re.IGNORECASE | re.MULTILINE)),
+    ("report_for_month", re.compile(r"for\s+the\s+month\s+([A-Z][A-Za-z]+\s+\d{4})", re.IGNORECASE)),
+    ("vendor_name", re.compile(r"Vendor\s+Name\s*:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)),
+    ("document_type", re.compile(
+        # Service Performance Report variants — including Adobe Scan OCR's
+        # tendency to glue the leading "S" of "Service" onto "Monthly" and
+        # leave "ervice" behind ("MonthlyS ervice Performance Report").
+        r"\b(Monthly\s*[Ss]?\s*[Ss]?ervice\s+Performance\s+Report"
+        r"|Service\s+Performance\s+Report"
+        r"|Monthly\s+Performance\s+Report"
+        r"|Work\s+Order|Purchase\s+Order|Invoice)\b",
+        re.IGNORECASE,
+    )),
 ]
+
+
+def _normalize_doc_type(raw: str) -> str:
+    """Collapse OCR variants of doc-type strings to a canonical name."""
+    s = " ".join(raw.split())
+    s_lower = s.lower()
+    if "service performance report" in s_lower or "ervice performance report" in s_lower:
+        return "Monthly Service Performance Report" if "monthly" in s_lower else "Service Performance Report"
+    if "monthly performance report" in s_lower:
+        return "Monthly Performance Report"
+    return s
 
 
 _SIGNATURE_BLOCK_RE = re.compile(
@@ -256,7 +278,10 @@ def _extract_text_fields(text: str) -> dict[str, str | list[str]]:
     for key, pattern in _TEXT_FIELD_PATTERNS:
         m = pattern.search(text)
         if m:
-            fields[key] = " ".join(m.group(1).split()).rstrip(",.;")
+            value = " ".join(m.group(1).split()).rstrip(",.;")
+            if key == "document_type":
+                value = _normalize_doc_type(value)
+            fields[key] = value
     fields.update(_extract_signature_block(text))
     copy_to = _extract_copy_to(text)
     if copy_to:
@@ -469,6 +494,68 @@ def _extract_mpr_period_dates(text: str) -> tuple[str, str]:
     return ("", "")
 
 
+# ---------------------------------------------------------------------------
+# NICSI SPR (Service Performance Report) — format-specific parser
+# ---------------------------------------------------------------------------
+# SPR rows have the shape:
+#   <designation prefix>  <date_from>  <date_to>  <candidate>  <PM>  <performance>
+# All five tail fields land on one line in pdfplumber's extracted text, e.g.:
+#   "(Minimum work 01-01-26 31-01-26 Aravind JB Unnikrishnan B Very Good"
+# The designation, qty, and S.No appear on surrounding lines.
+
+_SPR_PERFORMANCE_RE = re.compile(
+    r"\b(Very\s+Good|Excellent|Satisfactory|Unsatisfactory|Average|Good|Poor)\b",
+    re.IGNORECASE,
+)
+
+_SPR_ROW_RE = re.compile(
+    r"(\d{1,2}-\d{1,2}-\d{2,4})\s+"          # from date
+    r"(\d{1,2}-\d{1,2}-\d{2,4})\s+"          # to date
+    r"(?P<rest>.+?)\s+"                       # candidate + PM
+    r"(?P<perf>Very\s+Good|Excellent|Satisfactory|Unsatisfactory|Average|Good|Poor)"
+    r"\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _split_candidate_pm(rest: str) -> tuple[str, str]:
+    """Split "Aravind JB Unnikrishnan B" into ("Aravind JB", "Unnikrishnan B").
+
+    NICSI Project Manager names typically end in a single-letter initial
+    preceded by a multi-letter surname (e.g. "Unnikrishnan B"). When that
+    pattern matches at the end, take the last two words as the PM. Otherwise
+    fall back to splitting the words roughly in half.
+    """
+    words = rest.split()
+    if len(words) < 2:
+        return (rest.strip(), "")
+    # Preferred: <multi-letter surname> <single-letter initial> at the end
+    if len(words[-1]) == 1 and len(words[-2]) > 1 and words[-2][0].isupper():
+        return (" ".join(words[:-2]), " ".join(words[-2:]))
+    # Fallback: split in half
+    mid = (len(words) + 1) // 2
+    return (" ".join(words[:mid]), " ".join(words[mid:]))
+
+
+def _extract_spr_table(text: str) -> list[dict[str, str]]:
+    """Extract a NICSI Service Performance Report table from extracted text."""
+    designation = _extract_mpr_designation(text)
+    rows: list[dict[str, str]] = []
+    for i, m in enumerate(_SPR_ROW_RE.finditer(text), start=1):
+        candidate, pm = _split_candidate_pm(m.group("rest"))
+        rows.append({
+            "s_no": str(i),
+            "designation": designation,
+            "qty": "1",
+            "service_period_from": m.group(1),
+            "service_period_to": m.group(2),
+            "candidate_name": candidate,
+            "project_manager_name": pm,
+            "overall_performance": " ".join(m.group("perf").split()),
+        })
+    return rows
+
+
 def _extract_mpr_table(text: str) -> list[dict[str, str | list[str]]]:
     """Extract a NICSI MPR table from OCR text. Handles both group and multi-row layouts."""
     cleaned = _rejoin_split_dates(text)
@@ -679,12 +766,16 @@ def read_pdf(
                     for k, v in _extract_text_fields(page_result.text).items():
                         page_result.fields.setdefault(k, v)
 
-                # Format-specific table extraction for NICSI MPR documents
+                # Format-specific table extraction for NICSI MPR / SPR documents.
                 # Runs on both text-based and OCR'd PDFs when pdfplumber's generic
                 # table detection failed to find anything.
                 if not page_result.tables:
                     doc_type = (page_result.fields.get("document_type") or "").lower()
-                    if "monthly performance report" in doc_type:
+                    if "service performance report" in doc_type:
+                        spr_rows = _extract_spr_table(page_result.text)
+                        if spr_rows:
+                            page_result.tables.append(spr_rows)
+                    elif "monthly performance report" in doc_type:
                         mpr_rows = _extract_mpr_table(page_result.text)
                         if mpr_rows:
                             page_result.tables.append(mpr_rows)
