@@ -380,7 +380,18 @@ def _ocr_page(pdf_path: Path, page_number: int, dpi: int = 300) -> str:
 # because OCR badly interleaves the visual columns into the text stream.
 
 _MPR_DATE_HYPHEN = re.compile(r"\d{1,2}-[A-Z][a-z]{2}-\d{4}")
-_MPR_DATE_SLASH = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
+_MPR_DATE_SLASH = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
+_MPR_DATE_ANY = re.compile(r"\d{1,2}[-/](?:[A-Z][a-z]{2}|\d{1,2})[-/]\d{2,4}")
+
+# Words that show up in designations — used to filter them OUT when guessing
+# employee names from the OCR text. Lowercase.
+_DESIGNATION_WORDS = {
+    "level", "minimum", "work", "experience", "experience.", "years", "year",
+    "with", "one", "two", "1st", "2nd", "3rd", "4th",
+    "increment", "increment-tier", "tier", "tier-",
+    "software", "application", "support", "engineer",
+    "relevant", "to", "less", "than", "or", "and",
+}
 
 
 def _rejoin_split_dates(text: str) -> str:
@@ -402,21 +413,29 @@ def _extract_mpr_designation(text: str) -> str:
     elif re.search(r"Software\s+Application\s+Support\s+Engineer", text):
         parts.append("Software Application Support Engineer")
 
-    if m := re.search(r"work\s+experience\s+(\d+)", text, re.IGNORECASE):
+    # Experience phrase. Try several patterns:
+    #   "experience N years" — Adobe Scan style (file4: "experience 1 years)")
+    #   "work experience N"  — VersaLink OCR style (yatendra: "work experience 1 ...")
+    #   "(N to less than M years ...)" — NICSI Software Engineer style
+    if m := re.search(r"experience\s+(\d+)\s+years?", text, re.IGNORECASE):
+        parts.append(f"(Minimum work experience {m.group(1)} years)")
+    elif m := re.search(r"work\s+experience\s+(\d+)", text, re.IGNORECASE):
         parts.append(f"(Minimum work experience {m.group(1)} years)")
     elif m := re.search(r"(\d+)\s+to\s+less\s+than\s+(\d+)\s+years?", text, re.IGNORECASE):
         parts.append(f"({m.group(1)} to less than {m.group(2)} years relevant experience)")
 
-    # "with Nth Increment" — "with N..." and "Increment" can be far apart in OCR
-    m_with = re.search(r"with\s+(\d+(?:st|nd|rd|th)?)\b", text)
-    has_inc = re.search(r"\bIncrement\b", text)
+    # "with <N|word> Increment" — Increment may be on a different line with
+    # column content in between. Allow digit, ordinal, or words "one|two|three".
+    m_with = re.search(r"with\s+(\d+(?:st|nd|rd|th)?|one|two|three)\b", text, re.IGNORECASE)
+    has_inc = re.search(r"\b[Ii]ncrement\b", text)
     if m_with and has_inc:
-        parts.append(f"with {m_with.group(1)} Increment")
+        parts.append(f"with {m_with.group(1).lower()} Increment")
     elif m := re.search(r"(\d+(?:st|nd|rd|th))\s+year\s+(\d+(?:st|nd|rd|th|[\"”]))\s+[Ii]ncrement", text):
         parts.append(f"{m.group(1)} year {m.group(2)} Increment")
 
-    if m := re.search(r"Tier\s*-\s*\d+", text):
-        parts.append(f"— {m.group(0).strip()}")
+    # "Tier - N" or "Tier N" or "Tier-N" (separator optional)
+    if m := re.search(r"Tier\s*-?\s*(\d+)", text):
+        parts.append(f"— Tier - {m.group(1)}")
     return " ".join(parts)
 
 
@@ -454,15 +473,24 @@ def _extract_mpr_table(text: str) -> list[dict[str, str | list[str]]]:
     """Extract a NICSI MPR table from OCR text. Handles both group and multi-row layouts."""
     cleaned = _rejoin_split_dates(text)
 
+    # Pre-count date triplets so we can sanity-check Layout B's results.
+    triplet_re = re.compile(
+        r"(\d{1,2}[-/](?:[A-Z][a-z]{2}|\d{1,2})[-/]\d{2,4})\s+"
+        r"(\d{1,2}[-/](?:[A-Z][a-z]{2}|\d{1,2})[-/]\d{2,4})\s+"
+        r"(\d{1,2}[-/](?:[A-Z][a-z]{2}|\d{1,2})[-/]\d{2,4})"
+        r"(?:\s+(\d+))?",
+    )
+    triplet_count = len(triplet_re.findall(cleaned))
+
     # Layout B: lines like "<si_no> [|] <Name…> ... <date> [|] <date> [|] <date>"
     # Both `|` separators (after si_no AND between dates) may be missing in OCR.
     # Name grows until just before "(" or a digit (so multi-word names like
-    # "Ch. Kiran" / "K Vijay" stay whole).
+    # "Ch. Kiran" / "K Vijay" stay whole). Years can be 2 or 4 digits.
     rows_b: list[dict[str, str | list[str]]] = []
     for m in re.finditer(
         r"^\s*(\d+)\s*\|?\s*([A-Z][\w.'\-\s]+?)\s*(?=[\(\d])"
         r".*?"
-        r"(\d{1,2}/\d{1,2}/\d{4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{4})",
+        r"(\d{1,2}/\d{1,2}/\d{2,4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
         cleaned,
         re.MULTILINE,
     ):
@@ -474,8 +502,76 @@ def _extract_mpr_table(text: str) -> list[dict[str, str | list[str]]]:
             "working_period_from": m.group(4),
             "working_period_to": m.group(5),
         })
-    if rows_b:
+    # Only trust Layout B if it found at least as many rows as date-triplets in the text
+    if rows_b and len(rows_b) >= triplet_count:
         return rows_b
+
+    # Layout C: split text by designation-block boundaries (each row starts
+    # with a new "Level X" / "Software Application..." marker). Works for
+    # PDFs where pdfplumber re-orders columns and the SI numbers don't align
+    # with the name lines (e.g. Adobe Scan output of file4-style MPRs).
+    boundary_re = re.compile(
+        r"\b(?:Level\s+\d+|Software\s+Application\s+Support\s+Engineer)\b"
+    )
+    boundaries = [m.start() for m in boundary_re.finditer(cleaned)]
+    if len(boundaries) >= 1:
+        rows_c: list[dict[str, str | list[str]]] = []
+        header_words = {
+            "monthly", "performance", "report", "project", "no", "mpr", "month",
+            "work", "order", "name", "designation", "date", "of", "joining",
+            "working", "period", "from", "to", "absent", "service", "details",
+            "candidate", "manager", "leave", "remarks", "satisfactory",
+            "overall", "ref", "vendor", "sir", "madam", "dated", "scientist",
+            "national", "informatics", "centre", "signature", "stamp",
+            "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug",
+            "sep", "oct", "nov", "dec",
+        }
+        footer_re = re.compile(
+            r"\bPerformance\s+of\s+the\s+above\b"
+            r"|\bSignature\s*[&(]"
+            r"|\bDated:\s*\d"
+            r"|\b(?:NATIONAL\s+INFORMATICS|National\s+Informatics)\b",
+        )
+        for i, start in enumerate(boundaries):
+            end = boundaries[i + 1] if i + 1 < len(boundaries) else len(cleaned)
+            chunk = cleaned[start:end]
+            # Trim away anything past the table's footer / signature block
+            if fm := footer_re.search(chunk):
+                chunk = chunk[: fm.start()]
+            # Need at least 3 dates to form a row
+            chunk_triplet = triplet_re.search(chunk)
+            if not chunk_triplet:
+                continue
+            # SI no: digit on its own line/word; fall back to position
+            si_m = re.search(r"(?:^|\n)\s*(\d+)\s*(?:\||\n|\s)", chunk)
+            si_no = si_m.group(1) if si_m else str(i + 1)
+            # Name: capitalized non-designation, non-header words. Single-letter
+            # words like "M" are kept as middle initials but obvious column
+            # labels ("S", "I", "A") are filtered.
+            name_words: list[str] = []
+            single_letter_skip = {"s", "i", "a"}
+            for w in re.findall(r"\b([A-Z](?:[a-zA-Z.']*))\b", chunk):
+                lw = w.lower().rstrip(".,;")
+                if lw in _DESIGNATION_WORDS or lw in header_words:
+                    continue
+                if len(lw) == 1 and lw in single_letter_skip:
+                    continue
+                name_words.append(w)
+            employee_name = " ".join(name_words)
+            designation = _extract_mpr_designation(chunk)
+            row: dict[str, str | list[str]] = {
+                "si_no": si_no,
+                "employee_name": employee_name,
+                "designation": designation,
+                "date_of_joining": chunk_triplet.group(1),
+                "working_period_from": chunk_triplet.group(2),
+                "working_period_to": chunk_triplet.group(3),
+            }
+            if chunk_triplet.group(4):
+                row["absent"] = chunk_triplet.group(4)
+            rows_c.append(row)
+        if rows_c:
+            return rows_c
 
     # Layout A: group format — one designation, multiple team members.
     # Numbered names can appear anywhere on a line (NICSI OCR interleaves
@@ -583,8 +679,10 @@ def read_pdf(
                     for k, v in _extract_text_fields(page_result.text).items():
                         page_result.fields.setdefault(k, v)
 
-                # Format-specific table extraction for OCR'd NICSI MPR documents
-                if page_result.method == "ocr" and not page_result.tables:
+                # Format-specific table extraction for NICSI MPR documents
+                # Runs on both text-based and OCR'd PDFs when pdfplumber's generic
+                # table detection failed to find anything.
+                if not page_result.tables:
                     doc_type = (page_result.fields.get("document_type") or "").lower()
                     if "monthly performance report" in doc_type:
                         mpr_rows = _extract_mpr_table(page_result.text)
