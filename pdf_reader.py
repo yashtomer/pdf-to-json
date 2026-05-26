@@ -193,28 +193,36 @@ _TEXT_FIELD_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("mpr_for_month", re.compile(r"MPR\s+for\s+the\s+Month\s*:\s*(.+?)(?:\s+(?:Work|Project)\b|\n|$)", re.IGNORECASE)),
     ("report_for_month", re.compile(r"for\s+the\s+month\s+([A-Z][A-Za-z]+\s+\d{4})", re.IGNORECASE)),
     ("vendor_name", re.compile(r"Vendor\s+Name\s*:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)),
-    ("document_type", re.compile(
-        # Service Performance Report variants — including Adobe Scan OCR's
-        # tendency to glue the leading "S" of "Service" onto "Monthly" and
-        # leave "ervice" behind ("MonthlyS ervice Performance Report").
-        r"\b(Monthly\s*[Ss]?\s*[Ss]?ervice\s+Performance\s+Report"
-        r"|Service\s+Performance\s+Report"
-        r"|Monthly\s+Performance\s+Report"
-        r"|Work\s+Order|Purchase\s+Order|Invoice)\b",
-        re.IGNORECASE,
-    )),
 ]
 
 
-def _normalize_doc_type(raw: str) -> str:
-    """Collapse OCR variants of doc-type strings to a canonical name."""
-    s = " ".join(raw.split())
-    s_lower = s.lower()
-    if "service performance report" in s_lower or "ervice performance report" in s_lower:
-        return "Monthly Service Performance Report" if "monthly" in s_lower else "Service Performance Report"
-    if "monthly performance report" in s_lower:
-        return "Monthly Performance Report"
-    return s
+# Document-type detection runs in PRIORITY order — more specific labels first
+# so a "Monthly Performance Report" body that mentions an upstream "Work Order"
+# isn't misclassified as a Work Order.
+_DOC_TYPE_PATTERNS: list[tuple[str, str]] = [
+    (r"Monthly\s*[Ss]?\s*[Ss]?ervice\s+Performance\s+Report", "Monthly Service Performance Report"),
+    (r"Service\s+Performance\s+Report",                       "Service Performance Report"),
+    (r"Monthly\s+Performance\s+Report",                       "Monthly Performance Report"),
+    (r"Monthlv\s+Performance\s+Report",                       "Monthly Performance Report"),  # common OCR
+    # NIC Digital MPR format — header reads "MPR for - 04/2026"
+    (r"\bMPR\s+for\s*-\s*\d{1,2}\s*/\s*\d{2,4}",              "Monthly Performance Report"),
+    # NICSI MPR — header line "MPR for the Month: April 2026"
+    (r"\bMPR\s+for\s+the\s+[Mm]onth\b",                       "Monthly Performance Report"),
+    # Deployment Confirmation emails carry employee tables but aren't MPRs
+    (r"Deployment\s+Confirmation",                            "Deployment Confirmation"),
+    (r"Work\s+Order",                                         "Work Order"),
+    (r"Purchase\s+Order",                                     "Purchase Order"),
+    (r"\bInvoice\b",                                          "Invoice"),
+]
+_DOC_TYPE_COMPILED = [(re.compile(p, re.IGNORECASE), label) for p, label in _DOC_TYPE_PATTERNS]
+
+
+def _detect_document_type(text: str) -> str:
+    """Return canonical document type, checking patterns in priority order."""
+    for pattern, label in _DOC_TYPE_COMPILED:
+        if pattern.search(text):
+            return label
+    return ""
 
 
 _SIGNATURE_BLOCK_RE = re.compile(
@@ -279,9 +287,11 @@ def _extract_text_fields(text: str) -> dict[str, str | list[str]]:
         m = pattern.search(text)
         if m:
             value = " ".join(m.group(1).split()).rstrip(",.;")
-            if key == "document_type":
-                value = _normalize_doc_type(value)
             fields[key] = value
+    # Document type uses a priority-ordered detector so MPR/SPR always wins
+    # over a "Work Order" string that happens to appear in the body text.
+    if dt := _detect_document_type(text):
+        fields["document_type"] = dt
     fields.update(_extract_signature_block(text))
     copy_to = _extract_copy_to(text)
     if copy_to:
@@ -440,12 +450,16 @@ def _extract_mpr_designation(text: str) -> str:
 
     # Experience phrase. Try several patterns:
     #   "experience N years" — Adobe Scan style (file4: "experience 1 years)")
+    #   "experience lyears" — same but OCR ate the space (Vidhushi/Sudeep)
     #   "work experience N"  — VersaLink OCR style (yatendra: "work experience 1 ...")
     #   "(N to less than M years ...)" — NICSI Software Engineer style
-    if m := re.search(r"experience\s+(\d+)\s+years?", text, re.IGNORECASE):
-        parts.append(f"(Minimum work experience {m.group(1)} years)")
-    elif m := re.search(r"work\s+experience\s+(\d+)", text, re.IGNORECASE):
-        parts.append(f"(Minimum work experience {m.group(1)} years)")
+    # Allow OCR-typed digits (I/i/l/O/o) inside the captured number.
+    if m := re.search(r"experience\s+([\dIilOo]+)\s*years?", text, re.IGNORECASE):
+        n = m.group(1).translate(_OCR_DIGIT_FIX).lstrip("0") or "1"
+        parts.append(f"(Minimum work experience {n} years)")
+    elif m := re.search(r"work\s+experience\s+([\dIilOo]+)", text, re.IGNORECASE):
+        n = m.group(1).translate(_OCR_DIGIT_FIX).lstrip("0") or "1"
+        parts.append(f"(Minimum work experience {n} years)")
     elif m := re.search(r"(\d+)\s+to\s+less\s+than\s+(\d+)\s+years?", text, re.IGNORECASE):
         parts.append(f"({m.group(1)} to less than {m.group(2)} years relevant experience)")
 
@@ -535,6 +549,213 @@ def _split_candidate_pm(rest: str) -> tuple[str, str]:
     # Fallback: split in half
     mid = (len(words) + 1) // 2
     return (" ".join(words[:mid]), " ".join(words[mid:]))
+
+
+# ---------------------------------------------------------------------------
+# NIC Digital MPR parser ("digital.nic.in" template)
+# ---------------------------------------------------------------------------
+# Header is "Project No(Name): ..." + "Work Order Number - ..." + "MPR for - MM/YYYY".
+# Each row of the body table reliably ends with a sentence beginning
+# "Performance was <X> during the period." which we use as a row anchor.
+# Name, designation, and DOJ are reconstructed from the chunk preceding it.
+
+_NIC_PERF_RE = re.compile(
+    r"(Performance\s+was\s+\w+(?:\s+\w+){0,4}\s+(?:during\s+the\s+)?\w*period\.?)",
+    re.IGNORECASE,
+)
+_NIC_DATE_RE = re.compile(
+    r"(\d{1,2}[\s.\-/]+\d{1,2}[\s.\-/]+\d{2,4})"
+)
+
+
+def _extract_nic_digital_mpr(text: str) -> list[dict[str, str]]:
+    """Parse the NIC Digital MPR layout (one row per "Performance was…" sentence)."""
+    perf_matches = list(_NIC_PERF_RE.finditer(text))
+    if not perf_matches:
+        return []
+
+    rows: list[dict[str, str]] = []
+    for i, pm in enumerate(perf_matches):
+        chunk_start = perf_matches[i - 1].end() if i > 0 else 0
+        chunk = text[chunk_start:pm.end()]
+        # Designation
+        designation = _extract_mpr_designation(chunk)
+        # Date of joining — first MM-YYYY-like value in the chunk
+        doj = ""
+        for dm in _NIC_DATE_RE.finditer(chunk):
+            raw = re.sub(r"\s+", "", dm.group(1))
+            raw = raw.replace("..", "-")
+            if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", raw):
+                doj = raw
+                break
+        # Name — capitalized 1–3 word fragment that isn't a designation token
+        name_candidates: list[str] = []
+        skip = {"level", "minimum", "minimlm", "minirnum", "work", "experience",
+                "years", "year", "tier", "performance", "satisfactory", "during",
+                "the", "period", "remarks", "attendance", "absence", "stay",
+                "joining", "relieving", "avg", "holidays", "working", "days",
+                "name", "designation", "date", "of", "not", "marked", "justified",
+                "total", "vendor", "project", "no", "work", "order", "number"}
+        for w in re.findall(r"\b([A-Z][a-zA-Z'.]{2,})\b", chunk):
+            lw = w.lower()
+            if lw in skip:
+                continue
+            name_candidates.append(w)
+            if len(name_candidates) >= 3:
+                break
+        # Performance string — collapse internal whitespace, fix "duringthe"
+        perf_text = " ".join(pm.group(1).split())
+        perf_text = re.sub(r"duringthe", "during the", perf_text, flags=re.IGNORECASE)
+        rows.append({
+            "s_no": str(i + 1),
+            "employee_name": " ".join(name_candidates),
+            "designation": designation,
+            "date_of_joining": doj,
+            "performance": perf_text,
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# NICSI MPR variant — per-row Work Order column (Vidhushi/Sudeep style)
+# ---------------------------------------------------------------------------
+# Each table row has its own M-prefixed Work Order number — different from
+# other NICSI MPRs where the WO is in the document header. OCR for these
+# scans is notably dirty (digits read as letters: "1" → "I", "10" → "r 0",
+# "01" → "0t", "11" → "I I"), so the date pattern is fuzzy and post-processed.
+
+_OCR_DIGIT_FIX = str.maketrans({
+    "I": "1", "i": "1", "l": "1", "|": "1",
+    "O": "0", "o": "0",
+    "t": "1", "r": "1",
+})
+
+_FUZZY_DATE_RE = re.compile(
+    # Each date component is 1-2 contiguous digit-or-OCR-letter chars, OR
+    # 1 char + whitespace + 1 char (catches OCR splits like "I I" → "11" or
+    # "r 0" → "10"). Allows the OCR text "01- r 0-2025" or "I I -09-2024"
+    # to match cleanly.
+    r"[\dIiltOo]{1,2}(?:\s+[\dIiltOo])?\s*[-/]\s*"
+    r"[\dIiltOor]{1,2}(?:\s+[\dIiltOor])?\s*[-/]\s*"
+    r"[\dIiltOo]{2,4}"
+)
+
+
+def _clean_ocr_date(raw: str) -> str:
+    s = re.sub(r"\s+", "", raw).translate(_OCR_DIGIT_FIX)
+    return s if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", s) else ""
+
+
+def _find_fuzzy_dates(text: str) -> list[str]:
+    out: list[str] = []
+    for m in _FUZZY_DATE_RE.finditer(text):
+        d = _clean_ocr_date(m.group(0))
+        if d:
+            out.append(d)
+    return out
+
+
+_HEADER_AND_BOILERPLATE_WORDS = {
+    "monthly", "monthlv", "performance", "report", "noida", "uttar",
+    "pradesh", "sector", "pinnacle", "tower", "ltd", "pvt", "aeologic",
+    "technologies", "name", "designation", "date", "joining", "working",
+    "period", "from", "leaves", "leavis", "taken", "takeh", "st",
+    "order", "mpr", "month", "projectno", "project", "no",
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+    "to", "by", "ref", "vendor", "sir", "madam", "dated",
+    "signature", "stamp", "scientist", "national", "informatics", "centre",
+}
+
+
+def _build_split_designation(level_text: str, tail_text: str) -> str:
+    """Build a designation when 'Level X' and the rest live in different chunks.
+
+    Used by the per-row Work Order column parser where each row's "Level X"
+    appears just before the WO number but its "with Nth Increment" / "Tier"
+    parts come after — and an adjacent row's content shouldn't bleed in.
+    """
+    parts: list[str] = []
+    if m := re.search(r"\bLevel\s+\d+\b", level_text):
+        parts.append(m.group(0).strip())
+    elif m := re.search(r"\bLevel\s+\d+\b", tail_text):
+        parts.append(m.group(0).strip())
+    elif re.search(r"Software\s+Application\s+Support\s+Engineer", level_text + " " + tail_text):
+        parts.append("Software Application Support Engineer")
+
+    if m := re.search(r"experience\s+([\dIilOo]+)\s*years?", tail_text, re.IGNORECASE):
+        n = m.group(1).translate(_OCR_DIGIT_FIX).lstrip("0") or "1"
+        parts.append(f"(Minimum work experience {n} years)")
+    elif m := re.search(r"work\s+experience\s+([\dIilOo]+)", tail_text, re.IGNORECASE):
+        n = m.group(1).translate(_OCR_DIGIT_FIX).lstrip("0") or "1"
+        parts.append(f"(Minimum work experience {n} years)")
+
+    m_with = re.search(r"with\s+(\d+(?:st|nd|rd|th)?|one|two|three)\b", tail_text, re.IGNORECASE)
+    if m_with and re.search(r"\b[Ii]ncrement\b", tail_text):
+        parts.append(f"with {m_with.group(1).lower()} Increment")
+
+    if m := re.search(r"Tier\s*-?\s*(\d+)", tail_text):
+        parts.append(f"— Tier - {m.group(1)}")
+    return " ".join(parts)
+
+
+def _extract_mpr_with_wo_column(text: str) -> list[dict[str, str]]:
+    """Extract NICSI MPR rows where each row carries its own Work Order number."""
+    wo_matches = list(re.finditer(r"\b(M\d{6,})\b", text))
+    if not wo_matches:
+        return []
+
+    rows: list[dict[str, str]] = []
+    for i, wm in enumerate(wo_matches):
+        wo_no = wm.group(1)
+        prev_end = wo_matches[i - 1].end() if i > 0 else 0
+        next_start = (
+            wo_matches[i + 1].start()
+            if i + 1 < len(wo_matches)
+            else min(len(text), wm.end() + 400)
+        )
+        before = text[prev_end:wm.start()]
+        after = text[wm.end():next_start]
+
+        # Name: last 2-3 capitalized non-skip words before the WO
+        name_words: list[str] = []
+        for w in re.findall(r"\b([A-Z][a-zA-Z'.]{1,})\b", before):
+            lw = w.lower().rstrip(".,;")
+            if lw in _DESIGNATION_WORDS or lw in _HEADER_AND_BOILERPLATE_WORDS:
+                continue
+            name_words.append(w)
+        employee_name = " ".join(name_words[-3:]) if name_words else ""
+
+        # Designation: build per-row.
+        #   - "Level X" lives in BEFORE (just ahead of the WO number).
+        #   - experience / "with Nth Increment" / "Tier - N" all live in AFTER
+        #     (the rest of this row's content). Restricting those searches to
+        #     AFTER prevents the previous row's "with 3rd" from leaking in.
+        tail_text = after
+        if nm := re.search(r"\bLevel\s+\d+\b", tail_text):
+            tail_text = tail_text[:nm.start()]
+        designation = _build_split_designation(before, tail_text)
+
+        # Dates (fuzzy, OCR-cleanup) — take first three
+        dates = _find_fuzzy_dates(after)
+
+        # Leaves taken: trailing single digit on the same OCR line as the dates
+        leaves = ""
+        first_line = after.split("\n", 1)[0]
+        if lm := re.search(r"\b(\d)\b\s*$", first_line):
+            leaves = lm.group(1)
+
+        rows.append({
+            "si_no": str(i + 1),
+            "employee_name": employee_name,
+            "designation": designation,
+            "work_order_no": wo_no,
+            "date_of_joining": dates[0] if dates else "",
+            "working_period_from": dates[1] if len(dates) > 1 else "",
+            "working_period_to": dates[2] if len(dates) > 2 else "",
+            "leaves_taken": leaves,
+        })
+    return rows
 
 
 def _extract_spr_table(text: str) -> list[dict[str, str]]:
@@ -717,6 +938,11 @@ def read_pdf(
             result.page_count = len(pdf.pages)
             result.metadata = {k: str(v) for k, v in (pdf.metadata or {}).items()}
 
+            # Document-level doc_type cache. The doc-type header is often only
+            # printed on page 1 of a multi-page report; we propagate it to
+            # subsequent pages so they parse as the same type.
+            doc_doc_type = ""
+
             for idx, page in enumerate(pdf.pages, start=1):
                 page_result = PageResult(
                     page_number=idx, text="", method="empty", char_count=0
@@ -766,6 +992,30 @@ def read_pdf(
                     for k, v in _extract_text_fields(page_result.text).items():
                         page_result.fields.setdefault(k, v)
 
+                # Propagate the document-level doc_type to pages that didn't
+                # detect their own (multi-page PDFs where only page 1 has the
+                # title block). When a page disagrees with the document-level
+                # type, the more SPECIFIC type wins — so a page that mentions
+                # an upstream "Work Order" doesn't replace the propagated
+                # "Monthly Performance Report".
+                specificity = {
+                    "Monthly Service Performance Report": 4,
+                    "Service Performance Report": 3,
+                    "Monthly Performance Report": 3,
+                    "Deployment Confirmation": 2,
+                    "Work Order": 1,
+                    "Purchase Order": 1,
+                    "Invoice": 1,
+                    "": 0,
+                }
+                page_type = page_result.fields.get("document_type", "")
+                if specificity.get(page_type, 0) > specificity.get(doc_doc_type, 0):
+                    doc_doc_type = page_type
+                if doc_doc_type and (
+                    specificity.get(doc_doc_type, 0) >= specificity.get(page_type, 0)
+                ):
+                    page_result.fields["document_type"] = doc_doc_type
+
                 # Format-specific table extraction for NICSI MPR / SPR documents.
                 # Runs on both text-based and OCR'd PDFs when pdfplumber's generic
                 # table detection failed to find anything.
@@ -776,9 +1026,21 @@ def read_pdf(
                         if spr_rows:
                             page_result.tables.append(spr_rows)
                     elif "monthly performance report" in doc_type:
-                        mpr_rows = _extract_mpr_table(page_result.text)
-                        if mpr_rows:
-                            page_result.tables.append(mpr_rows)
+                        # Per-row Work Order column variant (Vidhushi/Sudeep) —
+                        # try first since it's the most-specific signal (≥2 M\d+
+                        # numbers in the body). Fall back to NIC Digital, then
+                        # generic NICSI MPR.
+                        wo_rows = _extract_mpr_with_wo_column(page_result.text)
+                        if len(wo_rows) >= 2:
+                            page_result.tables.append(wo_rows)
+                        else:
+                            nic_rows = _extract_nic_digital_mpr(page_result.text)
+                            if nic_rows:
+                                page_result.tables.append(nic_rows)
+                            else:
+                                mpr_rows = _extract_mpr_table(page_result.text)
+                                if mpr_rows:
+                                    page_result.tables.append(mpr_rows)
 
                 page_result.char_count = len(page_result.text)
                 result.pages.append(page_result)
