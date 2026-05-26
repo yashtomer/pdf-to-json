@@ -747,13 +747,19 @@ def _find_fuzzy_dates(text: str) -> list[str]:
 _HEADER_AND_BOILERPLATE_WORDS = {
     "monthly", "monthlv", "performance", "report", "noida", "uttar",
     "pradesh", "sector", "pinnacle", "tower", "ltd", "pvt", "aeologic",
+    "acologie",  # OCR variant of Aeologic
     "technologies", "name", "designation", "date", "joining", "working",
-    "period", "from", "leaves", "leavis", "taken", "takeh", "st",
+    "period", "from", "leaves", "leavis", "taken", "takeh",
+    "st", "sl", "si", "sno", "s.no",  # column header for serial no
     "order", "mpr", "month", "projectno", "project", "no",
     "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november", "december",
     "to", "by", "ref", "vendor", "sir", "madam", "dated",
     "signature", "stamp", "scientist", "national", "informatics", "centre",
+    # NIC Digital header tokens
+    "digital", "nic", "tool", "empower", "nicians", "government", "india",
+    "ministry", "electronics", "information", "technology", "deployment",
+    "confirmation", "hod", "sio", "approval", "kindly", "note",
 }
 
 
@@ -765,11 +771,17 @@ def _build_split_designation(level_text: str, tail_text: str) -> str:
     parts come after — and an adjacent row's content shouldn't bleed in.
     """
     parts: list[str] = []
+    combined = level_text + " " + tail_text
     if m := re.search(r"\bLevel\s+\d+\b", level_text):
         parts.append(m.group(0).strip())
     elif m := re.search(r"\bLevel\s+\d+\b", tail_text):
         parts.append(m.group(0).strip())
-    elif re.search(r"Software\s+Application\s+Support\s+Engineer", level_text + " " + tail_text):
+    elif re.search(r"Software\s+Application", combined) and re.search(
+        r"Support\s+Engineer", combined
+    ):
+        # "Software Application" and "Support Engineer" may be on different
+        # lines with column content in between (e.g. file9 row 5 has the WO
+        # number between "Software Application" and "Support Engineer").
         parts.append("Software Application Support Engineer")
 
     if m := re.search(r"experience\s+([\dIilOo]+)\s*years?", tail_text, re.IGNORECASE):
@@ -778,6 +790,8 @@ def _build_split_designation(level_text: str, tail_text: str) -> str:
     elif m := re.search(r"work\s+experience\s+([\dIilOo]+)", tail_text, re.IGNORECASE):
         n = m.group(1).translate(_OCR_DIGIT_FIX).lstrip("0") or "1"
         parts.append(f"(Minimum work experience {n} years)")
+    elif m := re.search(r"(\d+)\s+to\s+less\s+than\s+(\d+)\s+years?", tail_text, re.IGNORECASE):
+        parts.append(f"({m.group(1)} to less than {m.group(2)} years relevant experience)")
 
     m_with = re.search(r"with\s+(\d+(?:st|nd|rd|th)?|one|two|three)\b", tail_text, re.IGNORECASE)
     if m_with and re.search(r"\b[Ii]ncrement\b", tail_text):
@@ -806,14 +820,57 @@ def _extract_mpr_with_wo_column(text: str) -> list[dict[str, str]]:
         before = text[prev_end:wm.start()]
         after = text[wm.end():next_start]
 
-        # Name: last 2-3 capitalized non-skip words before the WO
-        name_words: list[str] = []
-        for w in re.findall(r"\b([A-Z][a-zA-Z'.]{1,})\b", before):
-            lw = w.lower().rstrip(".,;")
-            if lw in _DESIGNATION_WORDS or lw in _HEADER_AND_BOILERPLATE_WORDS:
-                continue
-            name_words.append(w)
-        employee_name = " ".join(name_words[-3:]) if name_words else ""
+        # For row 2+: trim `before` at the END of the PREVIOUS row's designation
+        # so leftover name parts ("Sharma" from row 1) don't bleed into row 2.
+        if i > 0:
+            for boundary_re in (
+                r"\bTier\s*[-\s]?\s*\d+\b",
+                r"\b[Ii]ncrement\b",
+                r"\bEngineer\b\s*\)?",
+                r"experience\s*\)\s*",
+            ):
+                ms = list(re.finditer(boundary_re, before))
+                if ms:
+                    before = before[ms[-1].end():]
+                    break
+
+        # Name extraction: take capitalized non-skip words from both:
+        #   1. the END of `before` (just ahead of the WO — e.g. "Abhishek")
+        #   2. the START of `after` (line right below the WO — e.g. "Sharma")
+        # This handles multi-line names that wrap around the WO line.
+        skip = _DESIGNATION_WORDS | _HEADER_AND_BOILERPLATE_WORDS
+
+        def _candidate_names(chunk: str) -> list[str]:
+            out: list[str] = []
+            for w in re.findall(r"\b([A-Z][a-zA-Z'.]{1,})\b", chunk):
+                lw = w.lower().rstrip(".,;")
+                if lw in skip:
+                    continue
+                out.append(w)
+            return out
+
+        before_names = _candidate_names(before)
+        # Names that wrap PAST the dates and onto a continuation line (file9):
+        # text after the LAST date but before the next designation marker.
+        after_text = after
+        dates_in_after = list(
+            re.finditer(r"\d{1,2}[-/](?:[A-Z][a-z]{2}|\d{1,2})[-/]\d{2,4}", after_text)
+        )
+        if dates_in_after:
+            after_text = after_text[dates_in_after[-1].end():]
+        # Stop at the next designation/header keyword so we don't pull from
+        # the next row.
+        if dm := re.search(
+            r"\b(?:Level|experience|increment|Tier|Software|Application|Support|Engineer|Minimum|years)\b",
+            after_text,
+            re.IGNORECASE,
+        ):
+            after_text = after_text[:dm.start()]
+        after_names = _candidate_names(after_text)
+
+        employee_name = " ".join(before_names[-2:] + after_names[:2]).strip()
+        if not employee_name and before_names:
+            employee_name = " ".join(before_names[-3:])
 
         # Designation: build per-row.
         #   - "Level X" lives in BEFORE (just ahead of the WO number).
