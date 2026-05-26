@@ -8,6 +8,9 @@ dist/
 .DS_Store
 
 # Real / sensitive PDFs — keep these out of source control.
+# Recursive: matches any .pdf anywhere under samples/ (including subfolders).
 # Use samples/.gitkeep to preserve the empty folder structure if desired.
+samples/**/*.pdf
+samples/**/*.PDF
 samples/*.pdf
 samples/*.PDF
