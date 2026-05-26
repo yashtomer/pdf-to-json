@@ -44,6 +44,15 @@ from typing import Optional
 
 import pdfplumber
 
+# Disable Pillow's "decompression bomb" warning. High-DPI government scans
+# routinely exceed the 90 MP default threshold and the warning has nothing to
+# do with malicious content here.
+try:
+    from PIL import Image as _PILImage
+    _PILImage.MAX_IMAGE_PIXELS = None
+except ImportError:
+    pass
+
 MIN_CHARS_PER_PAGE = 30  # below this, assume the page is scanned and needs OCR
 
 
@@ -184,16 +193,46 @@ def _kv_table_to_dict(table: list[list[str]]) -> dict[str, str]:
 
 _TEXT_FIELD_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("subject", re.compile(r"Subject\s*:\s*(.+?)(?:\n\s*\n|\n\s*Sir\b|$)", re.DOTALL)),
-    ("work_order_no", re.compile(r"(?:Work\s+Order|Order\.)\s*No\.?\s*:-?\s*([A-Z]\d+)", re.IGNORECASE)),
-    ("project_no", re.compile(r"Project No\.?\s*:-?\s*(\S+)")),
-    ("po_no", re.compile(r"PO No\.?\s*:-?\s*(\S+)")),
+    ("work_order_no", re.compile(
+        r"(?:Work\s+Order|Order\.?\s*)\s*No\.?\s*[>:-]*\s*([A-Z]\d{5,})",
+        re.IGNORECASE,
+    )),
+    # Project No.: capture the value but tolerate OCR mistakes for the leading
+    # 'S' (often read as $, §, or 5). The value is normalised in _normalize_project_no.
+    ("project_no", re.compile(r"Project\s*No\.?\s*[:>=]?\s*([\$§5A-Z][A-Z0-9]+)", re.IGNORECASE)),
+    ("po_no", re.compile(r"PO\s+No\.?\s*:-?\s*([A-Z]\d{5,})", re.IGNORECASE)),
     ("empanelment_no", re.compile(r"Empanelment No\s*:\s*(\S+)")),
     ("valid_till", re.compile(r"Valid Till\s*:\s*(\S+)")),
     ("gstin", re.compile(r"GSTIN(?:\s*No\.?)?(?:\s*of\s*\w+)?\s*:\s*([A-Z0-9]+)", re.IGNORECASE)),
-    ("mpr_for_month", re.compile(r"MPR\s+for\s+the\s+Month\s*:\s*(.+?)(?:\s+(?:Work|Project)\b|\n|$)", re.IGNORECASE)),
+    # NICSI MPR — "MPR for the Month: April 2026"
+    ("mpr_for_month", re.compile(
+        r"MPR\s+(?:for\s+the\s+)?Month\s*[:>-]?\s*(.+?)(?:\s+(?:Work|Project)\b|\n|$)",
+        re.IGNORECASE,
+    )),
+    # NIC Digital MPR — "MPR for - 04/2026" (numeric)
+    ("mpr_for_period", re.compile(r"MPR\s+for\s*-\s*(\d{1,2}/\d{2,4})", re.IGNORECASE)),
+    # SPR cover-letter — "Monthly Service Performance Report for the month JANUARY 2026"
     ("report_for_month", re.compile(r"for\s+the\s+month\s+([A-Z][A-Za-z]+\s+\d{4})", re.IGNORECASE)),
     ("vendor_name", re.compile(r"Vendor\s+Name\s*:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)),
+    # NIC Digital MPR — "Vendor - Aeologic Technologies Pvt. Ltd."
+    ("vendor_name_dashed", re.compile(r"Vendor\s*[-—]\s*(.+?)\s*$", re.MULTILINE)),
 ]
+
+
+def _normalize_project_no(raw: str) -> str:
+    """Fix OCR errors in Project No values: leading $ / § / 5 → S."""
+    if not raw:
+        return raw
+    fixed = raw
+    if fixed[0] in ("$", "§"):
+        fixed = "S" + fixed[1:]
+    # "5250..." → "S250..." when followed by alpha chars (project IDs always
+    # have a letter prefix, never a digit prefix).
+    if fixed[0] == "5" and len(fixed) > 1 and fixed[1:].lstrip("0123456789").isalpha() is False:
+        # Only flip if any letter follows (real project IDs like S250694GNKL)
+        if any(c.isalpha() for c in fixed[1:]):
+            fixed = "S" + fixed[1:]
+    return fixed
 
 
 # Document-type detection runs in PRIORITY order — more specific labels first
@@ -287,6 +326,13 @@ def _extract_text_fields(text: str) -> dict[str, str | list[str]]:
         m = pattern.search(text)
         if m:
             value = " ".join(m.group(1).split()).rstrip(",.;")
+            if key == "project_no":
+                value = _normalize_project_no(value)
+            if key == "vendor_name_dashed":
+                # Only used as a fallback when "Vendor Name:" wasn't found
+                if "vendor_name" not in fields:
+                    fields["vendor_name"] = value
+                continue
             fields[key] = value
     # Document type uses a priority-ordered detector so MPR/SPR always wins
     # over a "Work Order" string that happens to appear in the body text.
@@ -463,14 +509,21 @@ def _extract_mpr_designation(text: str) -> str:
     elif m := re.search(r"(\d+)\s+to\s+less\s+than\s+(\d+)\s+years?", text, re.IGNORECASE):
         parts.append(f"({m.group(1)} to less than {m.group(2)} years relevant experience)")
 
-    # "with <N|word> Increment" — Increment may be on a different line with
-    # column content in between. Allow digit, ordinal, or words "one|two|three".
-    m_with = re.search(r"with\s+(\d+(?:st|nd|rd|th)?|one|two|three)\b", text, re.IGNORECASE)
-    has_inc = re.search(r"\b[Ii]ncrement\b", text)
-    if m_with and has_inc:
-        parts.append(f"with {m_with.group(1).lower()} Increment")
-    elif m := re.search(r"(\d+(?:st|nd|rd|th))\s+year\s+(\d+(?:st|nd|rd|th|[\"”]))\s+[Ii]ncrement", text):
-        parts.append(f"{m.group(1)} year {m.group(2)} Increment")
+    # "with <N|word> Increment" — prefer the ordinal/word that's CLOSEST to
+    # the literal "Increment" so we don't accidentally pick "01" out of the
+    # date "01-06-2024" when the real increment ("one") is on a later line.
+    inc_anchored = re.search(
+        r"(one|two|three|four|five|\d+(?:st|nd|rd|th))\s*(?:\n|\s)+[Ii]ncrement",
+        text, re.IGNORECASE,
+    )
+    if inc_anchored:
+        parts.append(f"with {inc_anchored.group(1).lower()} Increment")
+    else:
+        m_with = re.search(r"with\s+(one|two|three|four|five|\d+(?:st|nd|rd|th))\b", text, re.IGNORECASE)
+        if m_with and re.search(r"\b[Ii]ncrement\b", text):
+            parts.append(f"with {m_with.group(1).lower()} Increment")
+        elif m := re.search(r"(\d+(?:st|nd|rd|th))\s+year\s+(\d+(?:st|nd|rd|th|[\"”]))\s+[Ii]ncrement", text):
+            parts.append(f"{m.group(1)} year {m.group(2)} Increment")
 
     # "Tier - N" or "Tier N" or "Tier-N" (separator optional)
     if m := re.search(r"Tier\s*-?\s*(\d+)", text):
@@ -478,26 +531,28 @@ def _extract_mpr_designation(text: str) -> str:
     return " ".join(parts)
 
 
-def _extract_mpr_period_dates(text: str) -> tuple[str, str]:
-    """Find "Working Period From / To" dates, including OCR-split forms like
-    "01-Apr- 30-Apr-\\n2026 2026" (stems on one line, years on another).
-    """
-    # First try a complete-date pair on adjacent positions
-    cleaned = _rejoin_split_dates(text)
-    pair_re = re.compile(
-        r"(\d{1,2}-[A-Z][a-z]{2}-\d{4})\s+(?:To\s+)?(\d{1,2}-[A-Z][a-z]{2}-\d{4})"
-    )
-    pair_slash = re.compile(
-        r"(\d{1,2}/\d{1,2}/\d{4})\s+(?:To\s+)?(\d{1,2}/\d{1,2}/\d{4})"
-    )
-    if m := pair_re.search(cleaned):
-        return (m.group(1), m.group(2))
-    if m := pair_slash.search(cleaned):
-        return (m.group(1), m.group(2))
+_DATE_ANY_LOOSE = re.compile(
+    r"\d{1,2}[-/](?:[A-Z][a-z]{2}|\d{1,2})[-/]\d{2,4}"
+)
 
-    # Stems on one line + years on next line pattern:
-    # "01-Apr- 30-Apr- <other text>\n<other text> 2026 2026"
-    # `(?<!\d)\d{4}(?!\d)` ensures we don't accidentally match "2" from "2nd Increment".
+
+def _extract_mpr_period_dates(text: str) -> tuple[str, str]:
+    """Find "Working Period From / To" dates, including OCR-split forms.
+
+    Strategy: collect all complete dates in the text in order. Convention is
+    that they appear as (date_of_joining, period_from, period_to), so when
+    we find 3 or more dates the last two are the period. With only 2 dates,
+    they ARE the period (no DOJ visible).
+
+    Also handles OCR-split forms like "01-Apr- 30-Apr-\\n2026 2026" where
+    stems and years are on different lines.
+    """
+    cleaned = _rejoin_split_dates(text)
+    all_dates = _DATE_ANY_LOOSE.findall(cleaned)
+    if len(all_dates) >= 3:
+        return (all_dates[-2], all_dates[-1])
+
+    # Stems on one line + years on next line (yatendra-style OCR split)
     split_pair = re.compile(
         r"(\d{1,2}-[A-Z][a-z]{2}-)\s+(\d{1,2}-[A-Z][a-z]{2}-)"
         r".*?(?<!\d)(\d{4})(?!\d)\s+(?<!\d)(\d{4})(?!\d)",
@@ -505,6 +560,9 @@ def _extract_mpr_period_dates(text: str) -> tuple[str, str]:
     )
     if m := split_pair.search(text):
         return (m.group(1) + m.group(3), m.group(2) + m.group(4))
+
+    if len(all_dates) == 2:
+        return (all_dates[0], all_dates[1])
     return ("", "")
 
 
@@ -560,7 +618,13 @@ def _split_candidate_pm(rest: str) -> tuple[str, str]:
 # Name, designation, and DOJ are reconstructed from the chunk preceding it.
 
 _NIC_PERF_RE = re.compile(
-    r"(Performance\s+was\s+\w+(?:\s+\w+){0,4}\s+(?:during\s+the\s+)?\w*period\.?)",
+    # Two common phrasings:
+    #   "Performance was satisfactory during the period."   (NIC Digital template)
+    #   "Performance of the above Resource found satisfactory."  (NICSI Kerala)
+    r"("
+    r"Performance\s+was\s+\w+(?:\s+\w+){0,4}\s+(?:during\s+the\s+)?\w*period\.?"
+    r"|Performance\s+of\s+the\s+above\s+Resource\s+found\s+\w+\.?"
+    r")",
     re.IGNORECASE,
 )
 _NIC_DATE_RE = re.compile(
@@ -588,21 +652,46 @@ def _extract_nic_digital_mpr(text: str) -> list[dict[str, str]]:
             if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", raw):
                 doj = raw
                 break
-        # Name — capitalized 1–3 word fragment that isn't a designation token
-        name_candidates: list[str] = []
-        skip = {"level", "minimum", "minimlm", "minirnum", "work", "experience",
-                "years", "year", "tier", "performance", "satisfactory", "during",
-                "the", "period", "remarks", "attendance", "absence", "stay",
-                "joining", "relieving", "avg", "holidays", "working", "days",
-                "name", "designation", "date", "of", "not", "marked", "justified",
-                "total", "vendor", "project", "no", "work", "order", "number"}
-        for w in re.findall(r"\b([A-Z][a-zA-Z'.]{2,})\b", chunk):
-            lw = w.lower()
-            if lw in skip:
+        # Name — capitalized words near the row anchor that aren't designation
+        # tokens or page-header / institutional boilerplate. Filter aggressively
+        # and take only the words closest to the Performance anchor (which marks
+        # the END of the row) so we don't pull page-header text from above.
+        name_skip = _DESIGNATION_WORDS | {
+            "performance", "satisfactory", "during", "the", "period",
+            "remarks", "attendance", "absence", "stay",
+            "joining", "relieving", "avg", "holidays", "working", "days",
+            "name", "designation", "date", "of", "not", "marked", "justified",
+            "total", "vendor", "project", "order", "number",
+            # Page-header tokens from NIC Digital MPR template
+            "digital", "nic", "tool", "empower", "nicians", "government", "india",
+            "ministry", "electronics", "information", "technology", "national",
+            "informatics", "centre", "centres", "deployment", "confirmation",
+            "monthly", "mpr", "month", "report", "ref", "vendor",
+            "sir", "madam", "dated", "scientist", "signature", "stamp",
+            "officer", "reporting", "hod", "sio", "approval", "kindly", "note",
+            "from", "to", "by", "and", "or",
+            # Month names
+            "january", "february", "march", "april", "may", "june", "july",
+            "august", "september", "october", "november", "december",
+            "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug",
+            "sep", "oct", "nov", "dec",
+        }
+        # Collect capitalized words with their position in the chunk
+        positioned: list[tuple[int, str]] = []
+        for wm in re.finditer(r"\b([A-Z][a-zA-Z'.]+)\b", chunk):
+            w = wm.group(1)
+            lw = w.lower().rstrip(".")
+            if lw in name_skip:
                 continue
-            name_candidates.append(w)
-            if len(name_candidates) >= 3:
-                break
+            # Filter project IDs (mixed letters+digits like "C230200GNND" — won't
+            # match \b[A-Z][a-z]+\b but be safe in case)
+            if not w.isalpha() and not (w[0].isupper() and "'" in w or "." in w):
+                # Has digits — likely an ID code
+                continue
+            positioned.append((wm.start(), w))
+        # Take the LAST 1-3 candidates (closest to the Performance sentence)
+        name_candidates = [w for _, w in positioned[-3:]] if positioned else []
+
         # Performance string — collapse internal whitespace, fix "duringthe"
         perf_text = " ".join(pm.group(1).split())
         perf_text = re.sub(r"duringthe", "during the", perf_text, flags=re.IGNORECASE)
@@ -758,6 +847,55 @@ def _extract_mpr_with_wo_column(text: str) -> list[dict[str, str]]:
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Leave Adjustment Certificate parser
+# ---------------------------------------------------------------------------
+# Many NICSI MPRs have one or more "Leave Adjustment Certificate" sub-pages,
+# each documenting one employee's leave for the month. The team's issue
+# report explicitly flagged these as "employees missing" — every certificate
+# = one extractable employee record.
+
+_LC_HEADER_RE = re.compile(r"Leave\s+Adjustment\s+Certificate", re.IGNORECASE)
+
+_LC_NAME_RE = re.compile(
+    # "Mr. Saravanan J", "Mr./Ms Kripal Singh", "Mrs. Some Name"
+    r"(?:Mr\.?|Mrs\.?|Ms\.?|Mr/?\.?Ms\.?|Mr\.?/Ms\.?)\s+"
+    r"([A-Z][a-zA-Z.'\s]+?)\s+"
+    r"(?:has\s+taken|of\s+\w+|to\s+inform)",
+    re.IGNORECASE,
+)
+
+_LC_DAYS_RE = re.compile(
+    # Match "5 days", "five days", "03 (Three) days", "Two days"
+    r"taken\s+(\d+\s*(?:\([\w\s]+\))?|[A-Za-z]+)\s+(?:\(\w+\)\s+)?days?\s+leaves?",
+    re.IGNORECASE,
+)
+
+# Leave dates like "27.01.2026" / "27-01-2026" / "27/01/2026"
+_LC_DATE_RE = re.compile(r"\b\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}\b")
+
+
+def _extract_leave_certificate(text: str) -> Optional[dict[str, str | list[str]]]:
+    """Parse a Leave Adjustment Certificate page into a single row dict."""
+    if not _LC_HEADER_RE.search(text):
+        return None
+    row: dict[str, str | list[str]] = {"row_type": "leave_certificate"}
+    if m := _LC_NAME_RE.search(text):
+        row["employee_name"] = " ".join(m.group(1).split())
+    if m := _LC_DAYS_RE.search(text):
+        days = m.group(1).strip()
+        # Strip parenthetical word forms: "03 (Three)" → "03"
+        days = re.sub(r"\s*\([^)]+\)\s*$", "", days).strip()
+        row["days_taken"] = days
+    dates = _LC_DATE_RE.findall(text)
+    if dates:
+        row["leave_dates"] = dates
+    # Only return a row if we extracted SOMETHING beyond the header
+    if len(row) > 1:
+        return row
+    return None
+
+
 def _extract_spr_table(text: str) -> list[dict[str, str]]:
     """Extract a NICSI Service Performance Report table from extracted text."""
     designation = _extract_mpr_designation(text)
@@ -790,26 +928,34 @@ def _extract_mpr_table(text: str) -> list[dict[str, str | list[str]]]:
     )
     triplet_count = len(triplet_re.findall(cleaned))
 
-    # Layout B: lines like "<si_no> [|] <Name…> ... <date> [|] <date> [|] <date>"
-    # Both `|` separators (after si_no AND between dates) may be missing in OCR.
-    # Name grows until just before "(" or a digit (so multi-word names like
-    # "Ch. Kiran" / "K Vijay" stay whole). Years can be 2 or 4 digits.
+    # Layout B: lines like "<si_no> [|] <Name…> ... <date> [|] <date> [|] <date> [leaves]"
+    # The name is restricted to a sequence of Title-Case words (each starts
+    # uppercase; rest are letters/period/apostrophe/dash). This stops the
+    # capture at the next lowercase token like "experience" / "with" that
+    # would otherwise pollute the name.
     rows_b: list[dict[str, str | list[str]]] = []
     for m in re.finditer(
-        r"^\s*(\d+)\s*\|?\s*([A-Z][\w.'\-\s]+?)\s*(?=[\(\d])"
+        r"^\s*(\d+)\s*\|?\s*"
+        r"([A-Z][a-zA-Z.'\-]*(?:\s+[A-Z][a-zA-Z.'\-]*){0,4})\s*"
         r".*?"
-        r"(\d{1,2}/\d{1,2}/\d{2,4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*\|?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\s*\|?\s*"
+        r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\s*\|?\s*"
+        r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})"
+        r"(?:\s+(\d{1,3}))?",
         cleaned,
         re.MULTILINE,
     ):
-        rows_b.append({
+        row: dict[str, str | list[str]] = {
             "si_no": m.group(1).strip(),
             "employee_name": m.group(2).strip().rstrip(".,; "),
             "designation": _extract_mpr_designation(cleaned),
             "date_of_joining": m.group(3),
             "working_period_from": m.group(4),
             "working_period_to": m.group(5),
-        })
+        }
+        if m.group(6):
+            row["leaves_taken"] = m.group(6)
+        rows_b.append(row)
     # Only trust Layout B if it found at least as many rows as date-triplets in the text
     if rows_b and len(rows_b) >= triplet_count:
         return rows_b
@@ -898,13 +1044,15 @@ def _extract_mpr_table(text: str) -> list[dict[str, str | list[str]]]:
         seen_nums.add(num)
         members.append(f"{num}. {name}")
 
-    all_dates = _MPR_DATE_HYPHEN.findall(cleaned)
+    # All dates in any supported format
+    all_dates = _DATE_ANY_LOOSE.findall(cleaned)
     designation = _extract_mpr_designation(text)
     period_from, period_to = _extract_mpr_period_dates(text)
 
-    # Date of joining = first complete date that isn't already used as a period date
+    # Date of joining = first date that isn't a period date (convention is
+    # DOJ comes first, then period from / to).
     used = {period_from, period_to}
-    date_of_joining = next((d for d in all_dates if d not in used), "")
+    date_of_joining = next((d for d in all_dates if d and d not in used), "")
 
     if not (members or designation or all_dates):
         return []
@@ -1026,21 +1174,30 @@ def read_pdf(
                         if spr_rows:
                             page_result.tables.append(spr_rows)
                     elif "monthly performance report" in doc_type:
-                        # Per-row Work Order column variant (Vidhushi/Sudeep) —
-                        # try first since it's the most-specific signal (≥2 M\d+
-                        # numbers in the body). Fall back to NIC Digital, then
-                        # generic NICSI MPR.
-                        wo_rows = _extract_mpr_with_wo_column(page_result.text)
-                        if len(wo_rows) >= 2:
-                            page_result.tables.append(wo_rows)
+                        # If this page is a Leave Adjustment Certificate sub-page,
+                        # extract that and skip the main MPR table parsers.
+                        lc_row = _extract_leave_certificate(page_result.text)
+                        if lc_row:
+                            page_result.tables.append([lc_row])
                         else:
-                            nic_rows = _extract_nic_digital_mpr(page_result.text)
-                            if nic_rows:
-                                page_result.tables.append(nic_rows)
+                            # Parser priority (most-specific → least):
+                            # 1. WO-column variant (Vidhushi/Sudeep) — ≥2 per-row
+                            #    M\d+ numbers in the body.
+                            # 2. Generic NICSI MPR (Layout A/B/C) — handles file4,
+                            #    file5, file6, yatendra, mprs_feb_mar_apr.
+                            # 3. NIC Digital MPR — fallback for the
+                            #    "Performance was satisfactory..." anchored layout.
+                            wo_rows = _extract_mpr_with_wo_column(page_result.text)
+                            if len(wo_rows) >= 2:
+                                page_result.tables.append(wo_rows)
                             else:
                                 mpr_rows = _extract_mpr_table(page_result.text)
                                 if mpr_rows:
                                     page_result.tables.append(mpr_rows)
+                                else:
+                                    nic_rows = _extract_nic_digital_mpr(page_result.text)
+                                    if nic_rows:
+                                        page_result.tables.append(nic_rows)
 
                 page_result.char_count = len(page_result.text)
                 result.pages.append(page_result)
