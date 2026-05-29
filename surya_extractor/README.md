@@ -1,8 +1,8 @@
 # surya_extractor
 
-A standalone HTTP server that uses **[Surya 2](https://github.com/datalab-to/surya)** (surya-ocr ≥ 0.20) to extract NICSI MPR data from PDFs. It OCRs each page with Surya's 650M vision-language model and returns the grouped employee JSON.
+A standalone HTTP API that uses **[Surya 2](https://github.com/datalab-to/surya)** (surya-ocr ≥ 0.20) to extract NICSI MPR data from PDFs. It OCRs each page with Surya's 650M vision-language model and returns the grouped employee JSON.
 
-**This is a separate project** — it lives in `surya_extractor/` and does NOT modify the main `pdf_reader.py`. Run it independently (Docker).
+Runs as a Docker container. CPU works anywhere; a GPU host makes it ~100× faster (see [Deploy on a server](#deploy-on-a-server)).
 
 ## What it gives you
 
@@ -41,85 +41,119 @@ or open **http://localhost:8000/docs** for the interactive Swagger UI.
 > `/extract*` request downloads the GGUF model (~1 GB) and spawns llama-server;
 > later requests skip that.
 
-On a GPU Linux host, add `--gpus all` and set `SURYA_INFERENCE_BACKEND=vllm`
-for the big speedup. On Apple Silicon you can also run natively (`uv sync` +
-`brew install llama.cpp`).
+For a real server (CPU restart-policy, GPU, reverse proxy, compose), see
+[Deploy on a server](#deploy-on-a-server) below.
 
-## Deploying on a server (for the team)
+## Deploy on a server
 
-### Option A — bare-metal / VM
+Everything runs in one Docker container. Pick CPU (works on any Linux box) or
+GPU (much faster).
 
-On any Linux box (Ubuntu / Debian / RHEL):
+### Server requirements
 
-```bash
-# Once
-sudo apt install -y python3.12 python3-pip poppler-utils
-pip install uv
-git clone <your-repo>
-cd <repo>/surya_extractor
-uv sync
+| Resource | CPU deploy | GPU deploy |
+|---|---|---|
+| OS | Linux + Docker | Linux + Docker + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
+| RAM | ≥ 6 GB free | ≥ 8 GB |
+| Disk | ~10 GB (image ~9 GB + GGUF model ~1-2 GB) | same |
+| GPU | — | any NVIDIA card with ≥ 8 GB VRAM |
+| Speed | ~2.5–4 min/page | ~1–2 s/page |
 
-# Run as a background service (simplest: tmux / screen / nohup)
-nohup uv run surya-server > server.log 2>&1 &
-```
-
-Now anyone on your network can hit `http://<server-ip>:8000`.
-
-For production, put it behind nginx or Caddy and use a process supervisor:
-
-```ini
-# /etc/systemd/system/surya-extractor.service
-[Unit]
-Description=Surya PDF Table Extractor
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/surya_extractor
-ExecStart=/usr/local/bin/uv run surya-server
-Restart=on-failure
-User=www-data
-
-[Install]
-WantedBy=multi-user.target
-```
+### 1. Get the code onto the server
 
 ```bash
-sudo systemctl enable --now surya-extractor
+git clone https://github.com/yashtomer/pdf-to-json.git
+cd pdf-to-json/surya_extractor
+docker build -t surya-extractor .          # ~5-10 min first build
 ```
 
-### Option B — Docker (recommended)
+### 2a. Run on CPU (works now, no GPU needed)
 
 ```bash
-docker build -t surya-extractor .
-docker run -d --name surya -p 8000:8000 -v $(pwd)/.cache:/root/.cache surya-extractor
-```
-
-The `-v` volume persists the downloaded model weights between restarts (otherwise the container re-downloads ~1 GB every restart).
-
-For GPU acceleration on NVIDIA hosts:
-
-```bash
-docker run -d --name surya --gpus all -p 8000:8000 \
-    -v $(pwd)/.cache:/root/.cache \
-    -e TORCH_DEVICE=cuda \
+docker run -d --name surya \
+    --restart unless-stopped \
+    -p 8000:8000 \
+    -v surya-cache:/root/.cache \
     surya-extractor
 ```
 
-### Option C — Docker Compose
+- `--restart unless-stopped` → survives reboots / crashes.
+- `-v surya-cache:/root/.cache` → a **named volume** persists the ~1-2 GB GGUF
+  model so it's downloaded only once (not on every restart).
 
-```yaml
-services:
-  surya:
-    build: .
-    ports: ["8000:8000"]
-    volumes: ["./.cache:/root/.cache"]
-    restart: unless-stopped
-    # For GPU:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+### 2b. Run on GPU (≈100× faster — recommended for real volume)
+
+The bundled image uses the CPU (llama.cpp) backend. To use a GPU you switch
+Surya to the vLLM backend, which needs `vllm` installed in the image. Build the
+GPU variant (CUDA base + `pip install vllm`) and run with:
+
+```bash
+docker run -d --name surya \
+    --gpus all \
+    --restart unless-stopped \
+    -p 8000:8000 \
+    -v surya-cache:/root/.cache \
+    -e SURYA_INFERENCE_BACKEND=vllm \
+    surya-extractor-gpu
+```
+
+> A ready-made GPU Dockerfile isn't included yet — ask and I'll add
+> `Dockerfile.gpu` (CUDA base image + vllm). The CPU image above is what ships
+> today.
+
+### 3. Reverse proxy — set LONG timeouts ⚠️
+
+This is the #1 server gotcha. Each page takes **minutes on CPU**, so a proxy
+with default timeouts (nginx = 60 s) will return **504 Gateway Timeout** mid-
+extraction. Raise the timeouts:
+
+```nginx
+server {
+    listen 80;
+    server_name mpr.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_read_timeout   900s;   # ← critical: allow multi-minute requests
+        proxy_send_timeout   900s;
+        client_max_body_size 50m;    # allow large PDF uploads
+    }
+}
+```
+
+Clients (curl, Postman, the team's scripts) must likewise allow long requests —
+e.g. `curl --max-time 1800`.
+
+### 4. First request warms up
+
+The first `/extract*` call downloads the GGUF model and spawns the inference
+backend (slow). Pre-warm after deploy so the first real user isn't the one who
+waits:
+
+```bash
+curl -F file=@samples/file.pdf -F dpi=150 http://localhost:8000/extract-grouped -o /dev/null
+```
+
+### 5. Health & ops
+
+```bash
+curl http://<server>:8000/health     # {"status":"ok","model_loaded":true}
+docker logs -f surya                  # live logs
+docker restart surya                  # model reloads from the cache volume (~10 s)
+```
+
+### Security
+
+The container binds `0.0.0.0:8000`. For anything internet-facing, **don't
+expose 8000 directly** — bind it behind the reverse proxy (`-p 127.0.0.1:8000:8000`)
+and let nginx/Caddy handle TLS + auth, or restrict port 8000 with a firewall.
+
+### docker-compose (declarative alternative)
+
+A `docker-compose.yml` is included — on the server just run:
+
+```bash
+docker compose up -d
 ```
 
 ---
@@ -204,9 +238,6 @@ For every PDF page:
 4. mpr_grouper        → parse the <table> HTML (content-driven column mapping),
                         pull work_order + month from text blocks, emit the
                         grouped {work_order, mpr_month, employees[]} shape
-   (legacy v1 path — surya.layout + table_rec + bbox clustering — was replaced
-    by the single-VLM full-page call in the Surya 2 migration)
-4. Return rows + cell text as JSON
 ```
 
 Surya 2 is a single 650M-param vision-language model (GGUF, downloaded once
@@ -216,22 +247,29 @@ spawns/attaches to that backend automatically.
 
 ---
 
-## Hardware
+## Hardware & speed
 
-| Setup | Performance |
-|---|---|
-| Laptop CPU (no GPU) | ~3-5 s per page |
-| Apple M-series (MPS) | ~1-2 s per page (set `TORCH_DEVICE=mps`) |
-| NVIDIA RTX 3060 / 4060+ | ~0.3-0.5 s per page (set `TORCH_DEVICE=cuda`) |
-| Cloud GPU (A10/A100) | ~0.1-0.3 s per page |
+| Setup | Backend | Speed/page |
+|---|---|---|
+| Linux/Intel CPU (Docker) | llama.cpp | ~2.5–4 min |
+| Apple Silicon (native) | llama.cpp (Metal) | ~5–15 s |
+| NVIDIA GPU (≥8 GB) | vLLM | ~1–2 s |
 
-For team-evaluation purposes, CPU is fine. For production volume, get a GPU.
+Backend is chosen by `SURYA_INFERENCE_BACKEND` (`llamacpp` default in the CPU
+image; `vllm` for the GPU image). `SURYA_INFERENCE_PARALLEL=1` is set for CPU to
+avoid OOM — raise it on GPU for higher throughput.
+
+For low-volume / evaluation, CPU is fine. For production throughput, deploy on
+a GPU host (see [Deploy on a server](#deploy-on-a-server)).
 
 ---
 
 ## License notes
 
-- **Surya itself** is GPL-3.0 (commercial license available from [Datalab](https://datalab.to))
-- **This wrapper code** in `surya_extractor/` is in the same repo as the rest of `pdf-reader` and inherits its license
+- **Surya weights** use a modified OpenRAIL-M license (free for research,
+  personal use, and orgs under $5M funding/revenue); broader commercial use →
+  [Datalab pricing](https://www.datalab.to/pricing). The Surya **code** is
+  Apache 2.0.
+- **llama.cpp** (the bundled `llama-server`) is MIT.
 
-For internal team use this is fine. If you ever ship this as a customer product, look at Datalab's commercial licensing terms or swap to PaddleOCR (Apache 2.0).
+Check Datalab's terms before shipping this as a paid customer-facing product.

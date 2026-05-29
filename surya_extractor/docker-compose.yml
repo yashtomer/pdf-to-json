@@ -1,0 +1,43 @@
+# Surya 2 MPR Extractor — server deployment.
+#   docker compose up -d        # build + run, survives reboots
+#   docker compose logs -f      # watch startup ("[surya2] Ready.")
+#
+# CPU by default. For GPU, build a vLLM image and uncomment the `deploy` block
+# + set SURYA_INFERENCE_BACKEND=vllm (see README "Deploy on a server").
+
+services:
+  surya:
+    build: .
+    image: surya-extractor
+    container_name: surya
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only — put nginx/Caddy in front for TLS + auth.
+      # Change to "8000:8000" to expose directly on the LAN.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Named volume persists the ~1-2 GB GGUF model across restarts.
+      - surya-cache:/root/.cache
+    environment:
+      SURYA_INFERENCE_BACKEND: llamacpp
+      SURYA_INFERENCE_PARALLEL: "1"      # raise on GPU for throughput
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s                  # model load grace period
+
+    # --- GPU (NVIDIA) — requires a vLLM image + NVIDIA Container Toolkit ---
+    # environment:
+    #   SURYA_INFERENCE_BACKEND: vllm
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  surya-cache:
