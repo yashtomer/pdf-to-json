@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.python-version
+dist/
+*.egg-info/
+.DS_Store
+
+# Uploaded files / cached outputs
+uploads/
+cache/
+*.pdf
+*.PDF
+
+# Surya model cache (downloaded automatically on first run)
+.cache/
