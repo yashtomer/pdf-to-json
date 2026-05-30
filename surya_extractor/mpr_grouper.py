@@ -92,6 +92,13 @@ _DESIG_HINTS = re.compile(
     re.IGNORECASE,
 )
 _DATE_RE = re.compile(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}")
+# A date written with a month NAME, e.g. "10-Feb-2026" / "01 Apr 2026" — these
+# slip past _DATE_RE (which is all-numeric) and must not be read as names.
+_MONTH_DATE_RE = re.compile(
+    r"\d{1,2}[-/\s](?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+    r"[-/\s]\d{2,4}",
+    re.IGNORECASE,
+)
 
 # Column-header / boilerplate words a cell must NOT be, to qualify as a name.
 _HEADER_WORDS = {
@@ -114,6 +121,7 @@ def _normalize_designation(desig: str) -> str:
     if not desig:
         return ""
     s = " ".join(desig.split())
+    s = s.replace("—", "-").replace("–", "-")   # em/en dash → hyphen
     s = re.sub(r'\b2["”\']\s*Increment', "2nd Increment", s)
     s = re.sub(r'(\d)["”\'](\s*Increment)', lambda m: f"{m.group(1)}nd{m.group(2)}", s)
     s = re.sub(r"(experience\))\s*-?\s*(\d+(?:st|nd|rd|th)\s+year)", r"\1 - \2", s)
@@ -247,7 +255,7 @@ def _looks_like_name(cell: str, designation: str) -> bool:
     cs = cell.strip()
     if not cs or cs == designation:
         return False
-    if _DESIG_HINTS.search(cs) or _DATE_RE.search(cs):
+    if _DESIG_HINTS.search(cs) or _DATE_RE.search(cs) or _MONTH_DATE_RE.search(cs):
         return False
     if re.fullmatch(r"[\d\-\.\s/]+", cs):          # pure number / dash / date-ish
         return False
@@ -267,6 +275,23 @@ def _looks_like_name(cell: str, designation: str) -> bool:
 # ---------------------------------------------------------------------------
 # Column mapping
 # ---------------------------------------------------------------------------
+
+_GROUPED_NAME_RE = re.compile(r"\d+\s*[.)]\s*")
+
+
+def _split_grouped_names(cell: str) -> list[str] | None:
+    """Some MPRs put several resources who share one designation in a single row,
+    listing the names in ONE cell as a numbered list:
+    "1. A.Siva Naga Prasad 2. Gauraw Shrivastava 3. Yatendra Pethe".
+    Return the individual names if the cell is such a list, else None.
+    """
+    cs = (cell or "").strip()
+    if len(_GROUPED_NAME_RE.findall(cs)) < 2:
+        return None
+    parts = [p.strip(" .,;") for p in _GROUPED_NAME_RE.split(cs)]
+    names = [p for p in parts if p and _looks_like_name(p, "")]
+    return names if len(names) >= 2 else None
+
 
 def _is_justification_table(rows: list[list[str]]) -> bool:
     """True for the 'Justification for Attendance not marked' / leave-reason
@@ -300,6 +325,23 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
             continue
 
         designation = next((c for c in r if _DESIG_HINTS.search(c)), "")
+
+        # Grouped row: several resources sharing one designation, their names
+        # packed into a single cell as a numbered list ("1. A 2. B 3. C"). Emit
+        # one employee per name, all sharing the designation + absent value.
+        if designation:
+            grouped = next((g for c in r if (g := _split_grouped_names(c))), None)
+            if grouped:
+                lv = _leaves(r[-1]) if r else 0
+                desig = _normalize_designation(designation)
+                for nm in grouped:
+                    employees.append({
+                        "employee_name": " ".join(nm.split()),
+                        "designation": desig,
+                        "leaves": lv,
+                    })
+                continue
+
         name = next((c for c in r if _looks_like_name(c, designation)), "")
 
         # Designation fallback: not every MPR uses "Level N" titles — some use a
