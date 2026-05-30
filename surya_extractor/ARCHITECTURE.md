@@ -240,9 +240,9 @@ page can take minutes on CPU).
 |---|---|---|
 | `server.py` | `extract_grouped`, `extract`, `health`, `lifespan`, `run` | FastAPI. Model loads once in `lifespan`. `--workers 1`. |
 | `extractor.py` | `SuryaExtractor.__init__`, `extract_from_pdf`, `extract_from_image`, `_block_to_dict` | Wraps Surya 2. Has an idempotent `shutil.move` patch so the model download survives retries. |
-| `mpr_grouper.py` | `group_mpr`, `_parse_table`, `_employees_from_table`, `_looks_like_name`, `_leaves`, `_normalize_designation`, `_reconcile_roster` | Pure Python + regex + stdlib `html.parser`. No extra deps. |
-| `Dockerfile` | — | Multi-stage: bundles `llama-server`, installs Python deps. |
-| `docker-compose.yml` | — | `SURYA_HOST_PORT` (default 8000), named model-cache volume, restart policy, healthcheck. |
+| `mpr_grouper.py` | `group_mpr`, `_parse_table`, `_employees_from_table`, `_looks_like_name`, `_leaves`, `_normalize_designation`, `_reconcile_roster`, `_parse_month_range`, `_parse_leave_certificate`, `_emp_leaves_for_month` | Pure Python + regex + stdlib `html.parser`. No extra deps. Also splits multi-month MPRs into per-month records using the Leave Adjustment Certificate pages. |
+| `Dockerfile` | — | Multi-stage: bundles `llama-server`, installs Python deps. Venv at `/opt/venv`, `PYTHONPATH=/app`, runs `/opt/venv/bin/uvicorn` directly (so `/app` can be bind-mounted). |
+| `docker-compose.yml` | — | `SURYA_HOST_PORT` (default 8000), named model-cache volume, restart policy, healthcheck, and a `./:/app:ro` bind mount so code edits need only `docker compose restart` (no rebuild). |
 
 ---
 

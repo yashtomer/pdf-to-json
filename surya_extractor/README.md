@@ -184,8 +184,22 @@ docker compose ps            # status
 docker compose logs -f       # live logs
 docker compose restart       # restart (model reloads from volume, ~10s)
 docker compose down          # stop
-git pull && docker compose up -d --build   # deploy updates
 ```
+
+**Deploying updates — no rebuild for code changes.** The source `.py` files are
+bind-mounted into the container (see `docker-compose.yml`), so:
+
+```bash
+# code change (server.py / extractor.py / mpr_grouper.py):
+git pull && docker compose restart            # ~10s, NO rebuild
+
+# dependency change (pyproject.toml / Dockerfile):
+git pull && docker compose up -d --build      # full rebuild (~5-10 min)
+```
+
+`docker compose restart` re-imports the updated code and reloads the model from
+the cache volume (~10s). Only a `pyproject.toml`/`Dockerfile` change needs the
+slow `--build`.
 
 The container has `restart: unless-stopped`, so it comes back automatically
 after a reboot or crash.

@@ -37,13 +37,19 @@ Also: `POST /extract` (raw per-page `blocks` with `html`), `GET /health`, `GET /
 ```bash
 cd surya_extractor
 docker compose up -d --build            # build + run (8000 by default)
-SURYA_HOST_PORT=8080 docker compose up -d --build   # if 8000 is taken
+SURYA_HOST_PORT=8080 docker compose up -d --build   # if 8000 is taken (prod uses 8080)
 docker compose logs -f                  # wait for "[surya2] Ready."
 curl -s http://127.0.0.1:${PORT}/health # {"status":"ok","model_loaded":true}
 ```
 
 First `/extract*` call downloads the ~1–2 GB GGUF model (HF
 `datalab-to/surya-ocr-2-gguf`) into the `surya-cache` volume — slow once, then cached.
+
+**Deploying code changes needs NO rebuild.** The `.py` source files are
+bind-mounted over `/app` (the venv lives at `/opt/venv` so it isn't shadowed;
+`PYTHONPATH=/app` lets `import server` resolve). So:
+- code edit (server/extractor/mpr_grouper.py): `git pull && docker compose restart` (~10s)
+- dependency change (pyproject.toml / Dockerfile): `git pull && docker compose up -d --build`
 
 ## Hard-won facts (don't relearn these)
 
