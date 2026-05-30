@@ -149,6 +149,24 @@ def _leaves(cell: str) -> int:
     return int(m.group(1))
 
 
+def _leaves_from_row(r: list[str]) -> int:
+    """Find the leave/absence count in a row. It's usually the last cell, but
+    some MPRs add a free-text "Remarks" column after it (and time columns like
+    "Avg Stay 07:44"). So scan from the right for the first numeric, count-like
+    cell — skipping cells that contain letters (remarks) or look like a clock
+    time. That lands on the "Total Absence"/"Absent"/"Leaves Taken" value."""
+    for cell in reversed(r):
+        cs = cell.strip()
+        if not cs:
+            continue
+        if re.search(r"[A-Za-z]", cs):          # a remarks sentence → skip
+            continue
+        if re.search(r"\d{1,2}:\d{2}", cs):      # a clock time → skip
+            continue
+        return _leaves(cs)
+    return 0
+
+
 _CONNECTORS = {"of", "the", "for", "and", "&"}
 
 
@@ -335,7 +353,7 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
         if designation:
             grouped = next((g for c in r if (g := _split_grouped_names(c))), None)
             if grouped:
-                lv = _leaves(r[-1]) if r else 0
+                lv = _leaves_from_row(r)
                 desig = _normalize_designation(designation)
                 for nm in grouped:
                     employees.append({
@@ -373,7 +391,7 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
             continue
 
         # Absent column is the rightmost cell.
-        leaves = _leaves(r[-1]) if r else 0
+        leaves = _leaves_from_row(r)
 
         employees.append({
             "employee_name": " ".join(name.split()),
@@ -479,13 +497,18 @@ def _merge_continuation_pages(base_months: list[dict]) -> list[dict]:
             index[key] = m
             merged.append(m)
             continue
-        seen = {e["employee_name"].lower() for e in hit["employees"] if e["employee_name"]}
+        # De-duplicate only EXACT repeats (same name AND same leaves) — those are
+        # page-overlap artifacts. The same person twice with different leaves is
+        # a genuine second entry (e.g. two sub-periods) and is kept.
+        seen = {(e["employee_name"].lower(), e["leaves"])
+                for e in hit["employees"] if e["employee_name"]}
         for e in m["employees"]:
             nm = e["employee_name"].lower()
-            if not nm or nm not in seen:
+            sig = (nm, e["leaves"])
+            if not nm or sig not in seen:
                 hit["employees"].append(e)
                 if nm:
-                    seen.add(nm)
+                    seen.add(sig)
     return merged
 
 
@@ -570,6 +593,11 @@ def group_mpr(surya_result: dict[str, Any]) -> list[dict]:
             result.append(m)
 
     _reconcile_roster(result)
+
+    # Drop rows whose name OCR never recovered (reconciliation fills what it can
+    # across months; anything still nameless is a partial/duplicate artifact).
+    for rec in result:
+        rec["employees"] = [e for e in rec["employees"] if e["employee_name"]]
     return result
 
 
@@ -588,11 +616,18 @@ def _reconcile_roster(months: list[dict]) -> None:
         slot = roster.get(m["work_order"], {})
         while len(m["employees"]) < len(slot):
             m["employees"].append({"employee_name": "", "designation": "", "leaves": 0})
+        present = {e["employee_name"].lower() for e in m["employees"] if e["employee_name"]}
         for i, e in enumerate(m["employees"]):
             ref = slot.get(i)
             if not ref:
                 continue
-            if not e["employee_name"] and ref["employee_name"]:
+            # Fill a missing name from the roster — but never introduce a name
+            # the month already has (that happens when another month has more
+            # rows, e.g. a duplicate person, and would pad this one with a phantom
+            # copy). Unfilled padded rows stay nameless and are dropped later.
+            if (not e["employee_name"] and ref["employee_name"]
+                    and ref["employee_name"].lower() not in present):
                 e["employee_name"] = ref["employee_name"]
+                present.add(ref["employee_name"].lower())
             if len(ref["designation"]) > len(e["designation"]):
                 e["designation"] = ref["designation"]
