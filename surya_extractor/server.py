@@ -1,25 +1,23 @@
 """
-FastAPI server exposing Surya PDF table extraction via HTTP.
+FastAPI server exposing Surya 2 MPR extraction via HTTP. API-only (no web UI).
 
 Endpoints
 ---------
-GET  /              Web UI for uploading a PDF and viewing extracted tables.
-GET  /health        Liveness probe + model-loaded status.
-POST /extract       Upload a PDF (multipart form), receive JSON result.
-GET  /docs          Auto-generated OpenAPI / Swagger UI.
+GET  /                API root — lists the endpoints.
+GET  /health          Liveness probe + model-loaded status.
+POST /extract         Upload a PDF, receive raw per-page blocks (label + html).
+POST /extract-grouped Upload an MPR PDF, receive grouped employee JSON
+                      [{work_order, mpr_month, employees[]}]  ← the main endpoint.
+GET  /docs            Auto-generated OpenAPI / Swagger UI.
 
-Run locally
------------
-    uv sync
-    uv run surya-server                 # uvicorn on port 8000
+Run (Docker is the supported path — see README)
+-----------------------------------------------
+    docker compose up -d --build
 
-Or behind a reverse proxy / in Docker
--------------------------------------
-    uv run uvicorn server:app --host 0.0.0.0 --port 8000 --workers 1
+NOTE: keep --workers 1. Surya's model loads into RAM once per worker; extra
+workers would multiply that footprint without speeding up our serial workflow.
 
-NOTE: keep --workers 1. Surya's models load into RAM/VRAM once per worker;
-multiple workers would multiply that footprint without speeding anything up
-for our serial-per-request workflow.
+See ARCHITECTURE.md for the full request flow and how each module fits together.
 """
 
 from __future__ import annotations

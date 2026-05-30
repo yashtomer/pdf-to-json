@@ -4,6 +4,8 @@ A standalone HTTP API that uses **[Surya 2](https://github.com/datalab-to/surya)
 
 Runs as a Docker container. CPU works anywhere; a GPU host makes it ~100× faster (see [Deploy on a server](#deploy-on-a-server)).
 
+> 📖 **New here? Read [ARCHITECTURE.md](ARCHITECTURE.md)** — a plain-language walkthrough of the code and the full PDF→JSON flow.
+
 ## What it gives you
 
 This is an **API-only** service (no web UI).
