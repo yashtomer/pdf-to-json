@@ -200,10 +200,20 @@ docker compose up -d --build      # builds the image, then starts it
 docker compose logs -f            # wait for "[surya2] Ready." then Ctrl-C
 ```
 
-> The `docker-compose.yml` binds to `127.0.0.1:8000` (localhost only) for
-> safety. To reach it from outside during testing, either set up the reverse
-> proxy in step 6, or temporarily change the compose `ports:` line to
-> `"8000:8000"` and open the firewall (step 5).
+> **Port already in use?** If another app on the server already listens on 8000,
+> the container fails with *"address already in use."* The compose host port is
+> configurable via `SURYA_HOST_PORT` — pick a free one:
+> ```bash
+> sudo ss -tlnp | grep -E ':(8000|8080|8001)' || echo "free"   # check first
+> SURYA_HOST_PORT=8080 docker compose up -d --build            # use, e.g., 8080
+> ```
+> Wherever the steps below say `8000`, use your chosen port (e.g. `8080`) —
+> including the nginx `proxy_pass` in step 6.
+
+> The `docker-compose.yml` binds to `127.0.0.1` (localhost only) for safety. To
+> reach it from outside, use the reverse proxy in step 6 (recommended), or
+> change the compose bind to `0.0.0.0:${SURYA_HOST_PORT:-8000}:8000` and open
+> the firewall (step 5).
 
 ### 5. Open the firewall (only if exposing 8000 directly)
 

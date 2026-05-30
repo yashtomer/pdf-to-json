@@ -12,9 +12,11 @@ services:
     container_name: surya
     restart: unless-stopped
     ports:
-      # Bind to localhost only — put nginx/Caddy in front for TLS + auth.
-      # Change to "8000:8000" to expose directly on the LAN.
-      - "127.0.0.1:8000:8000"
+      # Host port is configurable — set SURYA_HOST_PORT if 8000 is taken on the
+      # server (e.g. another app already uses it). Defaults to 8000.
+      # Bound to localhost only — put nginx/Caddy in front for TLS + auth.
+      # Use "0.0.0.0:${SURYA_HOST_PORT:-8000}:8000" to expose directly on the LAN.
+      - "127.0.0.1:${SURYA_HOST_PORT:-8000}:8000"
     volumes:
       # Named volume persists the ~1-2 GB GGUF model across restarts.
       - surya-cache:/root/.cache
