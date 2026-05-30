@@ -129,10 +129,16 @@ def _leaves(cell: str) -> int:
     cs = (cell or "").strip()
     if not cs or cs in ("-", "–", "—") or cs.lower() in ("nil", "na", "n/a"):
         return 0
-    if _DATE_RE.search(cs):
+    # A leading integer IS the count — the dates that often follow are just the
+    # detail of which days were taken: "2 (02.01.2026 & 19.01.2026)" -> 2.
+    m = re.match(r"(\d{1,3})\b", cs)
+    if not m:
         return 0
-    m = re.fullmatch(r"\d{1,3}", cs)
-    return int(cs) if m else 0
+    # ...unless that leading number is itself a date in the wrong column
+    # ("30/04/2026" or "02.01.2026" landed here by OCR error) — not a count.
+    if re.match(r"\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}", cs):
+        return 0
+    return int(m.group(1))
 
 
 _CONNECTORS = {"of", "the", "for", "and", "&"}
