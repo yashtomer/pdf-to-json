@@ -49,6 +49,8 @@ For a real server (CPU restart-policy, GPU, reverse proxy, compose), see
 Everything runs in one Docker container. Pick CPU (works on any Linux box) or
 GPU (much faster).
 
+> **Hostinger users → jump to [Deploy on a Hostinger VPS](#deploy-on-a-hostinger-vps)** for copy-paste steps.
+
 ### Server requirements
 
 | Resource | CPU deploy | GPU deploy |
@@ -155,6 +157,127 @@ A `docker-compose.yml` is included — on the server just run:
 ```bash
 docker compose up -d
 ```
+
+---
+
+## Deploy on a Hostinger VPS
+
+Hostinger **VPS** plans run a normal Linux server you fully control, so Docker
+works. (Hostinger *Shared* / *Web* hosting will **not** work — no Docker, no
+root. You need a **VPS** plan.)
+
+> ⚠️ **No GPU on Hostinger VPS** → it runs the CPU path: **~2.5–4 min per page**.
+> That's fine for low volume. Pick a plan with enough RAM — **≥ 8 GB** (KVM 2 or
+> higher). The image (~9 GB) + model (~1–2 GB) also need **~15 GB free disk**.
+
+### 1. Create / pick the VPS
+
+In hPanel: **VPS → choose a plan with ≥ 8 GB RAM** (KVM 2+), OS template
+**Ubuntu 24.04** (or "Ubuntu 24.04 with Docker" if offered — skips step 3).
+
+### 2. SSH into it
+
+From hPanel copy the server IP + root password, then on your Mac:
+
+```bash
+ssh root@YOUR_SERVER_IP
+```
+
+### 3. Install Docker (skip if you chose the Docker OS template)
+
+```bash
+apt update && apt install -y docker.io docker-compose-plugin git
+systemctl enable --now docker
+docker --version          # confirm it works
+```
+
+### 4. Get the code + build + run
+
+```bash
+git clone https://github.com/yashtomer/pdf-to-json.git
+cd pdf-to-json/surya_extractor
+docker compose up -d --build      # builds the image, then starts it
+docker compose logs -f            # wait for "[surya2] Ready." then Ctrl-C
+```
+
+> The `docker-compose.yml` binds to `127.0.0.1:8000` (localhost only) for
+> safety. To reach it from outside during testing, either set up the reverse
+> proxy in step 6, or temporarily change the compose `ports:` line to
+> `"8000:8000"` and open the firewall (step 5).
+
+### 5. Open the firewall (only if exposing 8000 directly)
+
+```bash
+ufw allow 8000/tcp        # skip this if you use the nginx proxy in step 6
+```
+
+### 6. Put nginx in front (recommended — TLS + the timeout fix)
+
+Pages take minutes on CPU, so the **long-timeout config is mandatory** or you'll
+get 504s. Install nginx and add a site:
+
+```bash
+apt install -y nginx
+cat >/etc/nginx/sites-available/surya <<'NGINX'
+server {
+    listen 80;
+    server_name YOUR_DOMAIN_OR_IP;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_read_timeout   900s;     # ← critical: allow multi-minute requests
+        proxy_send_timeout   900s;
+        client_max_body_size 50m;      # allow large PDF uploads
+    }
+}
+NGINX
+ln -s /etc/nginx/sites-available/surya /etc/nginx/sites-enabled/surya
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload nginx
+ufw allow 80/tcp
+```
+
+For HTTPS, point a domain's A-record at the VPS IP, then:
+```bash
+apt install -y certbot python3-certbot-nginx
+certbot --nginx -d YOUR_DOMAIN        # free Let's Encrypt cert + auto-renew
+```
+
+### 7. Warm it up + test
+
+```bash
+# first call downloads the ~1-2 GB model — do it once after deploy
+curl -F file=@/root/pdf-to-json/samples/file.pdf -F dpi=150 \
+     http://127.0.0.1:8000/extract-grouped -o /dev/null
+
+# from your own machine, through the proxy:
+curl -F file=@some-mpr.pdf -F dpi=150 \
+     http://YOUR_DOMAIN_OR_IP/extract-grouped -o result.json
+```
+
+### 8. Day-to-day ops on the VPS
+
+```bash
+cd ~/pdf-to-json/surya_extractor
+docker compose ps            # status
+docker compose logs -f       # live logs
+docker compose restart       # restart (model reloads from volume, ~10s)
+docker compose down          # stop
+git pull && docker compose up -d --build   # deploy updates
+```
+
+The container has `restart: unless-stopped`, so it comes back automatically
+after a reboot or crash.
+
+### Hostinger gotchas
+
+| Symptom | Cause / fix |
+|---|---|
+| `504 Gateway Timeout` | nginx default 60s timeout — apply the `proxy_read_timeout 900s` in step 6 |
+| Build killed / OOM | < 8 GB RAM — upgrade the plan, or add swap: `fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` |
+| `no space left on device` | image+model need ~15 GB — pick a bigger disk or prune: `docker system prune -af` |
+| Can't connect on port 8000 | it's bound to localhost — use the nginx proxy (step 6) or change the compose `ports:` mapping |
+| Slow (~3 min/page) | expected — Hostinger VPS has no GPU. For speed you'd need a GPU host (not Hostinger) |
 
 ---
 
