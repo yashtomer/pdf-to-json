@@ -130,6 +130,105 @@ def _leaves(cell: str) -> int:
 _CONNECTORS = {"of", "the", "for", "and", "&"}
 
 
+# ---------------------------------------------------------------------------
+# Multi-month MPRs + Leave Adjustment Certificates
+# ---------------------------------------------------------------------------
+# Some MPRs cover a RANGE of months (e.g. "MPR for the Month: January to March
+# 2026") and give a single *combined* Absent total in the main table. The PDF
+# then includes one "Leave Adjustment Certificate" page per employee that lists
+# their leave dates. When both are present we split the range into one record
+# per month and compute each employee's leaves for THAT month from the dates.
+
+_MONTH_LIST = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+_MONTH_INDEX = {m.lower(): i + 1 for i, m in enumerate(_MONTH_LIST)}
+_MONTH_INDEX.update({m[:3].lower(): i + 1 for i, m in enumerate(_MONTH_LIST)})
+
+_RANGE_RE = re.compile(
+    r"([A-Z][a-z]+)\s+to\s+([A-Z][a-z]+)\s+(\d{4})", re.IGNORECASE
+)
+# A leave entry: a date, optionally "to <date>", then "(<n> day[s])" in parens.
+_LEAVE_ENTRY_RE = re.compile(
+    r"(\d{1,2})[.\-/](\d{1,2})[.\-/]\d{2,4}"
+    r"(?:\s*to\s*\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4})?"
+    r"\s*\(([^)]*?day[^)]*?)\)",
+    re.IGNORECASE,
+)
+_CERT_NAME_RE = re.compile(
+    r"(?:Mr|Mrs|Ms)\b\.?\s*/?\s*(?:Mr|Mrs|Ms)?\b\.?\s+(.+?)\s+has\s+taken",
+    re.IGNORECASE,
+)
+_NUMWORD = {
+    "half": 0.5, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+
+def _fraction_to_days(frac: str) -> float:
+    """'(one day)'→1, '(Half day)'→0.5, '(Two days)'→2, 'one and half'→1.5."""
+    t = frac.lower().strip()
+    m = re.search(r"(one|two|three|four|five)\s+and\s+half", t)
+    if m:
+        return _NUMWORD[m.group(1)] + 0.5
+    if "half" in t:
+        return 0.5
+    for word, n in _NUMWORD.items():
+        if re.search(rf"\b{word}\b", t):
+            return float(n)
+    m = re.search(r"\d+(?:\.\d+)?", t)
+    return float(m.group()) if m else 0.0
+
+
+def _name_tokens(name: str) -> set[str]:
+    """Significant (≥3-letter) lowercase words of a name, for fuzzy matching."""
+    return {w.lower() for w in re.findall(r"[A-Za-z]{3,}", name or "")}
+
+
+def _parse_leave_certificate(text: str) -> tuple[str, dict[int, float]]:
+    """Parse one certificate → (employee_name, {month_number: total_days})."""
+    nm = _CERT_NAME_RE.search(text)
+    name = nm.group(1).strip().rstrip(".") if nm else ""
+    by_month: dict[int, float] = {}
+    for em in _LEAVE_ENTRY_RE.finditer(text):
+        month = int(em.group(2))
+        days = _fraction_to_days(em.group(3))
+        by_month[month] = by_month.get(month, 0.0) + days
+    return name, by_month
+
+
+def _parse_month_range(mpr_month: str) -> list[tuple[str, int]] | None:
+    """'January to March 2026' → [('January 2026',1),('February 2026',2),
+    ('March 2026',3)].  None if it isn't a range."""
+    m = _RANGE_RE.search(mpr_month or "")
+    if not m:
+        return None
+    start, end, year = m.group(1).title(), m.group(2).title(), m.group(3)
+    if start not in _MONTH_LIST or end not in _MONTH_LIST:
+        return None
+    si, ei = _MONTH_LIST.index(start), _MONTH_LIST.index(end)
+    if ei < si:
+        return None
+    return [(f"{_MONTH_LIST[i]} {year}", i + 1) for i in range(si, ei + 1)]
+
+
+def _fmt_leaves(days: float) -> float | int:
+    """Whole numbers as int (2), fractional kept as float (0.5)."""
+    return int(days) if float(days).is_integer() else days
+
+
+def _emp_leaves_for_month(
+    certs: list[tuple[str, dict[int, float]]], emp_name: str, month_num: int
+) -> float | int:
+    """Look up an employee's leave days for a month by fuzzy name match."""
+    etoks = _name_tokens(emp_name)
+    for cert_name, by_month in certs:
+        if etoks & _name_tokens(cert_name):
+            return _fmt_leaves(by_month.get(month_num, 0.0))
+    return 0
+
+
 def _looks_like_name(cell: str, designation: str) -> bool:
     cs = cell.strip()
     if not cs or cs == designation:
@@ -192,42 +291,80 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def _find_month(page_text: str) -> str:
+    """Return the MPR month string — a range ('January to March 2026') if present,
+    else a single month ('April 2026'), else ''."""
+    mm = re.search(r"MPR\s+for\s+the\s+Month\s*:?\s*", page_text, re.IGNORECASE)
+    zone = page_text[mm.end():mm.end() + 60] if mm else page_text
+    rng = _RANGE_RE.search(zone)
+    if rng:
+        return f"{rng.group(1).title()} to {rng.group(2).title()} {rng.group(3)}"
+    mo = _MONTH_RE.search(zone) or _MONTH_RE.search(page_text)
+    return f"{mo.group(1).title()} {mo.group(2)}" if mo else ""
+
+
 def group_mpr(surya_result: dict[str, Any]) -> list[dict]:
-    months: list[dict] = []
+    base_months: list[dict] = []          # pages that carry an employee table
+    cert_texts: list[str] = []            # Leave Adjustment Certificate pages
+
     for page in surya_result.get("pages", []):
         blocks = page.get("blocks", [])
         page_text = " ".join(_strip_tags(b.get("html", "")) for b in blocks)
 
+        # A certificate page contributes leave data, not its own month record.
+        if re.search(r"leave\s+adjustment\s+certificate", page_text, re.IGNORECASE):
+            cert_texts.append(page_text)
+            continue
+
         wo = _WORK_ORDER_RE.search(page_text)
         work_order = wo.group(1) if wo else ""
+        month = _find_month(page_text)
 
-        month = ""
-        mm = re.search(r"MPR\s+for\s+the\s+Month\s*:?\s*", page_text, re.IGNORECASE)
-        zone = page_text[mm.end():mm.end() + 40] if mm else page_text
-        mo = _MONTH_RE.search(zone) or _MONTH_RE.search(page_text)
-        if mo:
-            month = f"{mo.group(1).title()} {mo.group(2)}"
-
-        # Parse every table block; use the one with the most rows as the roster.
         tables = [
             _parse_table(b.get("html", ""))
             for b in blocks
             if (b.get("label") or "").lower() == "table" or "<table" in (b.get("html") or "")
         ]
         tables = [t for t in tables if t]
-        employees: list[dict] = []
-        if tables:
-            best = max(tables, key=len)
-            employees = _employees_from_table(best)
+        employees = _employees_from_table(max(tables, key=len)) if tables else []
 
-        months.append({
-            "work_order": work_order,
-            "mpr_month": month,
-            "employees": employees,
-        })
+        # Skip blank/continuation pages that have neither a month nor employees.
+        if employees or month:
+            base_months.append({
+                "work_order": work_order,
+                "mpr_month": month,
+                "employees": employees,
+            })
 
-    _reconcile_roster(months)
-    return months
+    certs = [_parse_leave_certificate(t) for t in cert_texts]
+    certs = [(n, bm) for (n, bm) in certs if n]
+
+    # Expand any month range into one record per month. When certificates are
+    # present, each employee's leaves are computed per month from the dates;
+    # otherwise the split months carry 0 (no per-month data available).
+    result: list[dict] = []
+    for m in base_months:
+        rng = _parse_month_range(m["mpr_month"])
+        if rng:
+            for month_name, month_num in rng:
+                result.append({
+                    "work_order": m["work_order"],
+                    "mpr_month": month_name,
+                    "employees": [
+                        {
+                            "employee_name": e["employee_name"],
+                            "designation": e["designation"],
+                            "leaves": _emp_leaves_for_month(certs, e["employee_name"], month_num)
+                            if certs else 0,
+                        }
+                        for e in m["employees"]
+                    ],
+                })
+        else:
+            result.append(m)
+
+    _reconcile_roster(result)
+    return result
 
 
 def _reconcile_roster(months: list[dict]) -> None:
