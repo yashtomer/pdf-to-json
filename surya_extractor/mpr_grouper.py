@@ -325,6 +325,9 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
             continue
 
         designation = next((c for c in r if _DESIG_HINTS.search(c)), "")
+        # Some MPRs list several work orders in one table with a "Work Order No."
+        # column — capture this row's own WO so group_mpr can split by it.
+        row_wo = next((m.group(1) for c in r if (m := _WORK_ORDER_RE.search(c))), "")
 
         # Grouped row: several resources sharing one designation, their names
         # packed into a single cell as a numbered list ("1. A 2. B 3. C"). Emit
@@ -339,6 +342,7 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
                         "employee_name": " ".join(nm.split()),
                         "designation": desig,
                         "leaves": lv,
+                        "_wo": row_wo,
                     })
                 continue
 
@@ -375,6 +379,7 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
             "employee_name": " ".join(name.split()),
             "designation": _normalize_designation(designation),
             "leaves": leaves,
+            "_wo": row_wo,
         })
     return employees
 
@@ -511,12 +516,28 @@ def group_mpr(surya_result: dict[str, Any]) -> list[dict]:
         tables = [t for t in tables if t and not _is_justification_table(t)]
         employees = _employees_from_table(max(tables, key=len)) if tables else []
 
-        # Skip blank/continuation pages that have neither a month nor employees.
-        if employees or month:
+        # Split this page's rows by their own "Work Order No." column when the
+        # table carries one (several work orders listed together); otherwise all
+        # rows fall under the page's work order. `_wo` is an internal hint set by
+        # _employees_from_table — strip it from the emitted employees.
+        by_wo: dict[str, list[dict]] = {}
+        for e in employees:
+            wo = e.pop("_wo", "") or work_order
+            by_wo.setdefault(wo, []).append(e)
+
+        if by_wo:
+            for wo, emps in by_wo.items():
+                base_months.append({
+                    "work_order": wo,
+                    "mpr_month": month,
+                    "employees": emps,
+                })
+        elif month:
+            # No employees but a month → keep a placeholder record for the page.
             base_months.append({
                 "work_order": work_order,
                 "mpr_month": month,
-                "employees": employees,
+                "employees": [],
             })
 
     base_months = _merge_continuation_pages(base_months)
