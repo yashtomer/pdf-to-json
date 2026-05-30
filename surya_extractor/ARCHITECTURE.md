@@ -130,7 +130,7 @@ for each page in the Surya result:
     page_text = all the blocks' text joined together
 
     work_order = find "M…" via regex            (_WORK_ORDER_RE)
-    month      = find "MPR for the Month: April 2026"  (_MONTH_RE)
+    month      = find the MPR month             (_find_month)
 
     table_html = the block whose label == "Table"
     rows       = _parse_table(table_html)        # HTML <table> → list of rows
@@ -177,19 +177,48 @@ line up. Instead, for each data row we find cells **by what they contain**:
 # mpr_grouper.py — _employees_from_table()
 for each row:
     skip it if it's the footer ("Performance of the above…", "Signature…")
-    designation = the cell that matches designation words
-                  (Level N / Software Application / Increment / Tier …)   (_DESIG_HINTS)
+    designation = the cell that matches designation words                (_DESIG_HINTS)
+                  (Level N / Software Application / Increment / Tier …)
+                  …or, if none matches but the row has a date, the cell
+                  right after the name (a plain job title like
+                  "GIS DIGITIZATION SUPERVISOR")
     name        = a cell that looks like a person's name                 (_looks_like_name)
+    keep the row only if it resolved to a designation
     leaves      = the LAST cell (the Absent column), parsed safely       (_leaves)
 ```
 
-- **`_looks_like_name`** accepts Title-Case words, but rejects dates,
-  designation text, and header words like "Date of Joining" (so headers don't
-  get mistaken for names).
-- **`_leaves`** returns `0` for `"-"`, blank, or a date that landed in that cell
-  by OCR error — only a real 1–3 digit number becomes the leave count.
+- **`_looks_like_name`** accepts Title-Case *and* ALL-CAPS names (e.g.
+  "RAKESH KUMAR SINGH"), but rejects dates, designation text, and header phrases
+  whose every word is a header word ("Date of Joining", "AGENCY Name", "New
+  Designation") so headers don't get mistaken for names.
+- **Requiring a designation** is what drops header rows and other non-employee
+  rows — they resolve to no designation. The fallback (the cell after the name,
+  guarded by the row having a date) lets MPRs that use plain job titles instead
+  of "Level N" still extract, without re-admitting header rows (which have no
+  date).
+- **`_leaves`** reads the *leading* integer as the count — the Absent column is
+  often "`2 (02.01.2026 & 19.01.2026)`", where the parenthetical just lists which
+  days. It returns `0` for `"-"`, blank, or a bare date that landed in the cell
+  by OCR error.
 - **`_normalize_designation`** fixes common OCR quirks, e.g. `2"` → `2nd`, and
   inserts the dash in `…experience) - 3rd year 2nd Increment`.
+
+### 4c. Choosing the right table, and stitching split tables
+
+Two more things happen around `_employees_from_table`:
+
+- **Justification grids are excluded.** Some MPRs append a "Justification for
+  Attendance not marked" table (columns #, Date, Day, Reason). Its *Day* cells
+  ("Friday") would look like names, so `_is_justification_table()` filters those
+  out before a page's employee table is picked — a table with a "Designation"
+  column is always treated as the employee table.
+- **Continuation pages are merged** (`_merge_continuation_pages`). Employee
+  tables routinely span a page break (employees 1-5 on one page, 6+ on the next
+  with no month label of its own), and some MPRs put each employee on a separate
+  page. A month-less page inherits the previous same-work-order month, then all
+  records sharing `(work_order, month)` merge into one — employees concatenated,
+  de-duplicated by name. This is why a 12-page, 4-work-order MPR comes back as 4
+  clean records, not 12 fragments.
 
 ---
 
@@ -240,7 +269,7 @@ page can take minutes on CPU).
 |---|---|---|
 | `server.py` | `extract_grouped`, `extract`, `health`, `lifespan`, `run` | FastAPI. Model loads once in `lifespan`. `--workers 1`. |
 | `extractor.py` | `SuryaExtractor.__init__`, `extract_from_pdf`, `extract_from_image`, `_block_to_dict` | Wraps Surya 2. Has an idempotent `shutil.move` patch so the model download survives retries. |
-| `mpr_grouper.py` | `group_mpr`, `_parse_table`, `_employees_from_table`, `_looks_like_name`, `_leaves`, `_normalize_designation`, `_reconcile_roster`, `_parse_month_range`, `_parse_leave_certificate`, `_emp_leaves_for_month` | Pure Python + regex + stdlib `html.parser`. No extra deps. Also splits multi-month MPRs into per-month records using the Leave Adjustment Certificate pages. |
+| `mpr_grouper.py` | `group_mpr`, `_parse_table`, `_employees_from_table`, `_is_justification_table`, `_merge_continuation_pages`, `_looks_like_name`, `_leaves`, `_find_month`, `_normalize_designation`, `_reconcile_roster`, `_parse_month_range`, `_parse_leave_certificate`, `_emp_leaves_for_month` | Pure Python + regex + stdlib `html.parser`. No extra deps. `_find_month` handles label variants, numeric `MM/YYYY`, and bare months (year from the page). Excludes justification grids, merges page-split / one-per-page tables, and splits multi-month MPRs into per-month records using the Leave Adjustment Certificate pages. |
 | `Dockerfile` | — | Multi-stage: bundles `llama-server`, installs Python deps. Venv at `/opt/venv`, `PYTHONPATH=/app`, runs `/opt/venv/bin/uvicorn` directly (so `/app` can be bind-mounted). |
 | `docker-compose.yml` | — | `SURYA_HOST_PORT` (default 8000), named model-cache volume, restart policy, healthcheck, and a `./:/app:ro` bind mount so code edits need only `docker compose restart` (no rebuild). |
 
