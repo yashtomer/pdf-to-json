@@ -14,3 +14,14 @@ samples/**/*.pdf
 samples/**/*.PDF
 samples/*.pdf
 samples/*.PDF
+
+# Local extraction test artifacts (raw Surya blocks, grouped outputs, scratch).
+.raw_all/
+.out_all/
+out_all/
+.raw_*.json
+.file*.raw.json
+.f14p1.pdf
+.p3.*
+.verify_all.py
+surya_extractor/native-server.log

@@ -95,10 +95,18 @@ _DATE_RE = re.compile(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}")
 
 # Column-header / boilerplate words a cell must NOT be, to qualify as a name.
 _HEADER_WORDS = {
-    "si", "no", "sno", "sl", "name", "designation", "date", "joining",
+    "si", "no", "sno", "sl", "sr", "name", "designation", "date", "joining",
     "working", "period", "from", "to", "absent", "leaves", "leave", "taken",
     "employee", "project", "work", "order", "mpr", "month", "performance",
     "report", "remarks",
+    # extra header/column-label words so two-word headers like "AGENCY Name",
+    # "Date of Relieving", "New Designation", "Candidate Name", "Attendance not
+    # marked Date" are recognised as headers (every word is a header word) and
+    # never mistaken for a person name.
+    "agency", "relieving", "relieved", "new", "wos", "wo", "details", "service",
+    "services", "candidate", "manager", "reason", "attendance", "marked", "not",
+    "avg", "stay", "hours", "absence", "total", "qty", "overall", "day", "days",
+    "holidays", "attendance/", "justified", "justification",
 }
 
 
@@ -239,17 +247,32 @@ def _looks_like_name(cell: str, designation: str) -> bool:
         return False
     # Reject header phrases: a cell whose every significant word is a header
     # word (e.g. "Date of Joining", "Name", "SI no", "Working Period").
-    words = [w.lower().strip(".,") for w in cs.split()]
+    words = [w.lower().strip(".,()/:;-") for w in cs.split()]
     significant = [w for w in words if w and w not in _CONNECTORS]
     if significant and all(w in _HEADER_WORDS for w in significant):
         return False
-    # A person name: has a capitalised letter and isn't absurdly long
-    return bool(re.search(r"[A-Z][a-z]", cs)) and len(cs.split()) <= 5
+    # A person name: contains a capitalised word — Title-case ("Rakesh") OR
+    # ALL-CAPS ("RAKESH", common in deployment/designation tables, file18/19) —
+    # and isn't absurdly long. (Header rows can't reach here as employees: they
+    # carry no designation and are dropped by _employees_from_table.)
+    return bool(re.search(r"[A-Z][a-zA-Z]", cs)) and len(cs.split()) <= 5
 
 
 # ---------------------------------------------------------------------------
 # Column mapping
 # ---------------------------------------------------------------------------
+
+def _is_justification_table(rows: list[list[str]]) -> bool:
+    """True for the 'Justification for Attendance not marked' / leave-reason
+    grids that some MPRs append (columns: #, Date, Day, Reason). Those are NOT
+    employee tables — their 'Day' cells (e.g. 'Friday') would otherwise be
+    mistaken for names. We exclude them before picking a page's employee table.
+    """
+    head = " ".join(" ".join(r) for r in rows[:2]).lower()
+    if "designation" in head:
+        return False  # has a Designation column → it's the employee table
+    return "justification" in head or ("reason" in head and "day" in head)
+
 
 def _employees_from_table(rows: list[list[str]]) -> list[dict]:
     """Extract employee records from a parsed MPR table — CONTENT-driven.
@@ -273,8 +296,29 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
         designation = next((c for c in r if _DESIG_HINTS.search(c)), "")
         name = next((c for c in r if _looks_like_name(c, designation)), "")
 
-        if not (designation or name):
-            continue  # header row / non-employee row
+        # Designation fallback: not every MPR uses "Level N" titles — some use a
+        # plain job title (e.g. "GIS DIGITIZATION SUPERVISOR") that matches no
+        # hint. When there's a name but no hit, the cell right after the name is
+        # the designation column. Guarded by the row containing a date (every
+        # real employee row has a Date of Joining) so header rows — which have a
+        # name-looking cell but no date — never get a fabricated designation.
+        if name and not designation and _DATE_RE.search(joined):
+            ni = r.index(name)
+            cand = r[ni + 1].strip() if ni + 1 < len(r) else ""
+            if (cand and len(cand) > 3 and not _DATE_RE.search(cand)
+                    and not re.fullmatch(r"[\d\-\.\s/]+", cand)
+                    and re.search(r"[A-Za-z]{2}", cand)):
+                designation = cand
+
+        # A real MPR employee row always resolves to a designation — either a
+        # hint ("Level N" / "Software Application…") or, via the fallback above,
+        # the job-title cell after the name. Header rows ("Sr No / Name /
+        # Designation", "From / To", "AGENCY Name"), justification rows, and
+        # other non-employee rows resolve to none, so requiring a designation
+        # drops them. (A designation with no readable name is still kept — real
+        # employee, OCR just missed the name.)
+        if not designation:
+            continue
 
         # Absent column is the rightmost cell.
         leaves = _leaves(r[-1]) if r else 0
@@ -291,16 +335,105 @@ def _employees_from_table(rows: list[list[str]]) -> list[dict]:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+_NUM_MONTH_RE = re.compile(r"\b(0?[1-9]|1[0-2])\s*/\s*(20\d{2})\b")
+_BARE_MONTH_RE = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b",
+    re.IGNORECASE,
+)
+_MONTH_ABBR = {m[:3].lower(): m for m in _MONTH_LIST}
+
+
+def _norm_month_name(name: str) -> str:
+    """'Apr'/'apr'/'APRIL' → 'April'."""
+    n = name.strip().title()
+    return _MONTH_ABBR.get(n[:3].lower(), n)
+
+
+def _dominant_year(text: str) -> str:
+    """The most-common 20xx year on the page (ties → the latest). '' if none."""
+    years = re.findall(r"\b(20\d{2})\b", text)
+    if not years:
+        return ""
+    from collections import Counter
+    c = Counter(years)
+    return max(c, key=lambda y: (c[y], int(y)))
+
+
 def _find_month(page_text: str) -> str:
-    """Return the MPR month string — a range ('January to March 2026') if present,
-    else a single month ('April 2026'), else ''."""
-    mm = re.search(r"MPR\s+for\s+the\s+Month\s*:?\s*", page_text, re.IGNORECASE)
-    zone = page_text[mm.end():mm.end() + 60] if mm else page_text
-    rng = _RANGE_RE.search(zone)
-    if rng:
-        return f"{rng.group(1).title()} to {rng.group(2).title()} {rng.group(3)}"
-    mo = _MONTH_RE.search(zone) or _MONTH_RE.search(page_text)
-    return f"{mo.group(1).title()} {mo.group(2)}" if mo else ""
+    """Return the MPR month string. Handles, in order of preference:
+      - a month LABEL ("MPR for the Month", "MPR Month", "MPR for -", "for the month")
+        then within its 60-char zone: a range ("January to March 2026"), a numeric
+        "MM/YYYY" (NIC Digital), a "<Month> <Year>", or a bare "<Month>" whose year
+        is taken from the page's dominant year (e.g. file8: "MPR Month: January").
+      - no label → conservative "<Month> <Year>" anywhere on the page.
+    Returns '' if nothing usable is found.
+    """
+    mm = (
+        re.search(r"MPR\s+for\s+the\s+Month\s*[-:]*\s*", page_text, re.IGNORECASE)
+        or re.search(r"MPR\s+Month\s*[-:]*\s*", page_text, re.IGNORECASE)
+        or re.search(r"MPR\s+for\s*[-:]+\s*", page_text, re.IGNORECASE)
+        or re.search(r"for\s+the\s+month\s+(?:of\s+)?", page_text, re.IGNORECASE)
+    )
+    if mm:
+        zone = page_text[mm.end():mm.end() + 60]
+        rng = _RANGE_RE.search(zone)
+        if rng:
+            return f"{_norm_month_name(rng.group(1))} to {_norm_month_name(rng.group(2))} {rng.group(3)}"
+        num = _NUM_MONTH_RE.search(zone)
+        if num:
+            return f"{_MONTH_LIST[int(num.group(1)) - 1]} {num.group(2)}"
+        mo = _MONTH_RE.search(zone)
+        if mo:
+            return f"{_norm_month_name(mo.group(1))} {mo.group(2)}"
+        bm = _BARE_MONTH_RE.search(zone)
+        if bm:
+            yr = _dominant_year(page_text)
+            return f"{_norm_month_name(bm.group(1))} {yr}".strip()
+    # No usable label/zone — conservative fallback: a Month+Year anywhere.
+    mo = _MONTH_RE.search(page_text)
+    return f"{_norm_month_name(mo.group(1))} {mo.group(2)}" if mo else ""
+
+
+def _merge_continuation_pages(base_months: list[dict]) -> list[dict]:
+    """Collapse per-page records into one record per (work_order, month).
+
+    MPR employee tables routinely span page breaks: page 1 holds employees 1-5,
+    the next page holds 6+ but carries no month label of its own. And some MPRs
+    place each employee on a separate page. Both produce several page-records for
+    the same work order and month that must become a single record.
+
+    Steps:
+      1. A month-less record inherits the month of the most recent record for the
+         same work order (it is a continuation page).
+      2. Records sharing (work_order, month) merge — employees concatenated,
+         de-duplicated by name (blank names are always kept; OCR missed them).
+    Order is preserved (page order), so the first occurrence anchors the record.
+    """
+    last_month_by_wo: dict[str, str] = {}
+    for m in base_months:
+        if m["mpr_month"]:
+            last_month_by_wo[m["work_order"]] = m["mpr_month"]
+        elif m["work_order"] and m["work_order"] in last_month_by_wo:
+            m["mpr_month"] = last_month_by_wo[m["work_order"]]
+
+    merged: list[dict] = []
+    index: dict[tuple, dict] = {}
+    for m in base_months:
+        key = (m["work_order"], m["mpr_month"])
+        hit = index.get(key)
+        if hit is None:
+            index[key] = m
+            merged.append(m)
+            continue
+        seen = {e["employee_name"].lower() for e in hit["employees"] if e["employee_name"]}
+        for e in m["employees"]:
+            nm = e["employee_name"].lower()
+            if not nm or nm not in seen:
+                hit["employees"].append(e)
+                if nm:
+                    seen.add(nm)
+    return merged
 
 
 def group_mpr(surya_result: dict[str, Any]) -> list[dict]:
@@ -325,7 +458,9 @@ def group_mpr(surya_result: dict[str, Any]) -> list[dict]:
             for b in blocks
             if (b.get("label") or "").lower() == "table" or "<table" in (b.get("html") or "")
         ]
-        tables = [t for t in tables if t]
+        # Keep only real employee tables — drop the appended "Justification for
+        # Attendance" grids so their day/reason rows don't leak as employees.
+        tables = [t for t in tables if t and not _is_justification_table(t)]
         employees = _employees_from_table(max(tables, key=len)) if tables else []
 
         # Skip blank/continuation pages that have neither a month nor employees.
@@ -335,6 +470,8 @@ def group_mpr(surya_result: dict[str, Any]) -> list[dict]:
                 "mpr_month": month,
                 "employees": employees,
             })
+
+    base_months = _merge_continuation_pages(base_months)
 
     certs = [_parse_leave_certificate(t) for t in cert_texts]
     certs = [(n, bm) for (n, bm) in certs if n]
