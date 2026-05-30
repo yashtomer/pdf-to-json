@@ -11,6 +11,8 @@ has `samples/` (test PDFs, gitignored) and this file.
 
 ## The one endpoint that matters
 
+Live base URL: **`https://pdfparser.aeologic.in`** (see deployment state below).
+
 ```
 POST /extract-grouped   (multipart: file=<pdf>, dpi=150)
 → [ { "work_order": "M2602757",
@@ -57,25 +59,37 @@ First `/extract*` call downloads the ~1–2 GB GGUF model (HF
   - NVIDIA GPU + vLLM: ~1–2 s/page
 - **Use a named Docker volume** (`surya-cache:/root/.cache`), not a bind mount —
   a macOS Docker bind-mount bug throws spurious ENOSPC. Named volume avoids it.
-- **Reverse proxy MUST use long timeouts** (`proxy_read_timeout 900s`) — pages take
-  minutes on CPU, so a default 60s nginx timeout returns 504 mid-request.
+- **Reverse proxy MUST use long timeouts** — pages take minutes on CPU, so a
+  default 60s timeout returns 504 mid-request. Apache (what prod uses):
+  `Timeout 900` + `ProxyTimeout 900` and `ProxyPass ... timeout=900`. nginx
+  equivalent: `proxy_read_timeout 900s`.
 - Accuracy is excellent on any hardware — Surya 2 reads degraded scans Tesseract
   returns as garbage (verified: it read a scanned April MPR page perfectly).
 
-## Current deployment state (Hostinger VPS)
+## Current deployment state (Hostinger VPS) — LIVE
 
-- Server: Hostinger VPS, Ubuntu, 8 vCPU / 31 GB RAM / 266 GB free, Docker 29.4.2.
-- SSH alias on the dev Mac: `hst` → `ssh aeo@187.127.159.226`.
-- Repo cloned at `~/pdf-to-json`. Image built. Container runs on **host port 8080**
-  (8000 was taken by another app, `invoice-agent`).
-- Bound to `127.0.0.1:8080` (localhost only). `curl http://127.0.0.1:8080/health`
-  works *on the server*.
-- **TODO: external access** — set up the nginx reverse proxy (port 80 →
-  `127.0.0.1:8080`, with the 900s timeouts), open the OS firewall (`ufw allow 80`),
-  AND open the port in Hostinger's panel-level firewall (hPanel → VPS → Firewall),
-  which is separate from `ufw`. See the "Deploy on a Hostinger VPS" section in
-  `surya_extractor/README.md` for the exact commands.
-- No GPU on Hostinger → expect ~2.5–4 min/page there (fine for low volume).
+- **Live since 2026-05-30 at `https://pdfparser.aeologic.in`** (e.g.
+  `https://pdfparser.aeologic.in/health` → `{"status":"ok","model_loaded":true}`,
+  `/docs` for Swagger). External access is **done** — the old nginx/firewall TODO
+  is closed.
+- Server: Hostinger VPS, Ubuntu, 8 vCPU / 31 GB RAM / ~247 GB free, Docker 29.4.2,
+  IP `187.127.159.226`. SSH alias on the dev Mac: `hst` → `ssh aeo@187.127.159.226`.
+  (Note: a Claude Code session may already be running *on* the server as user
+  `aeo`, host `srv1634371`, repo at `~/pdf-to-json` — check `hostname`.)
+- Container runs on **host port 8080**, bound to `127.0.0.1:8080` (8000 was taken
+  by another app). Healthy under `restart: unless-stopped`.
+- **Reverse proxy = Apache (NOT nginx).** This VPS already runs Apache2 on the host
+  fronting ~20 other `*.aeologic.in` vhosts, so surya was added as one more vhost
+  rather than introducing nginx. The vhost is
+  `/etc/apache2/sites-available/pdfparser.aeologic.in{,-le-ssl}.conf`:
+  - `ProxyPass / http://localhost:8080/ timeout=900` + `ProxyPassReverse`,
+    `ProxyPreserveHost On`, `X-Forwarded-Proto`.
+  - `Timeout 900` / `ProxyTimeout 900` (the critical CPU-page fix), `LimitRequestBody 0`.
+  - HTTP :80 vhost 301-redirects to HTTPS; :443 vhost serves it.
+  - Modules: `proxy`, `proxy_http`, `ssl` (already enabled).
+- **TLS**: Let's Encrypt cert at `/etc/letsencrypt/live/pdfparser.aeologic.in/`
+  (issued 2026-05-30, valid ~90 days, certbot auto-renew).
+- No GPU on Hostinger → expect ~2.5–4 min/page (fine for low volume).
 
 ## Git
 
