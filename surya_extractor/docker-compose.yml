@@ -18,7 +18,12 @@ services:
     build: .
     image: surya-extractor
     container_name: surya
+    # restart: unless-stopped → Docker auto-restarts the container if the process
+    # crashes/exits or the host reboots. (A *hang* without exit is handled by the
+    # autoheal service below, which restarts it when the healthcheck goes red.)
     restart: unless-stopped
+    labels:
+      - "autoheal=true"          # opt this container in to the autoheal watcher
     ports:
       # Host port is configurable — set SURYA_HOST_PORT if 8000 is taken on the
       # server (e.g. another app already uses it). Defaults to 8000.
@@ -55,6 +60,21 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+
+  # Watches ONLY containers labelled autoheal=true (i.e. just surya) and restarts
+  # any that Docker reports "unhealthy" — covers a genuine hang where the process
+  # is alive but stops answering /health. Scoped by label so it never touches the
+  # other services on this host. Lightweight (~10 MB Alpine image).
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: surya-autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal   # only restart containers with autoheal=true
+      AUTOHEAL_INTERVAL: "15"              # check health every 15s
+      AUTOHEAL_START_PERIOD: "180"         # give surya time to load the model first
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   surya-cache:

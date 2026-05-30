@@ -22,6 +22,7 @@ See ARCHITECTURE.md for the full request flow and how each module fits together.
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,6 +33,15 @@ from fastapi.responses import JSONResponse
 
 from extractor import SuryaExtractor
 from mpr_grouper import group_mpr
+
+# Surya OCR is single-threaded and CPU-bound (minutes per page on CPU). We serve
+# ONE extraction at a time: a second concurrent request gets a clear 503 instead
+# of silently queueing behind a multi-minute job (which made the box look hung).
+_BUSY = asyncio.Lock()
+_BUSY_MESSAGE = (
+    "Server is busy processing another document (it handles one at a time on "
+    "CPU). Please try again in a few minutes."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -101,18 +111,24 @@ async def extract(
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Please upload a .pdf file.")
 
-    # Write upload to a temp file (pdf2image needs a path, not bytes)
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path = Path(tmp.name)
+    if _BUSY.locked():
+        raise HTTPException(503, _BUSY_MESSAGE, headers={"Retry-After": "120"})
 
-    try:
-        result = _extractor.extract_from_pdf(tmp_path, dpi=dpi)
-        result["file"] = file.filename  # preserve original name in response
-    except Exception as e:
-        raise HTTPException(500, f"Extraction failed: {e!r}")
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    async with _BUSY:
+        # Write upload to a temp file (pdf2image needs a path, not bytes)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(await file.read())
+            tmp_path = Path(tmp.name)
+
+        try:
+            # Run the blocking, CPU-bound OCR in a worker thread so the event
+            # loop stays free to answer /health and reject concurrent requests.
+            result = await asyncio.to_thread(_extractor.extract_from_pdf, tmp_path, dpi=dpi)
+            result["file"] = file.filename  # preserve original name in response
+        except Exception as e:
+            raise HTTPException(500, f"Extraction failed: {e!r}")
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     return JSONResponse(result)
 
@@ -144,17 +160,24 @@ async def extract_grouped(
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Please upload a .pdf file.")
 
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path = Path(tmp.name)
+    if _BUSY.locked():
+        raise HTTPException(503, _BUSY_MESSAGE, headers={"Retry-After": "120"})
 
-    try:
-        raw = _extractor.extract_from_pdf(tmp_path, dpi=dpi)
-        grouped = group_mpr(raw)
-    except Exception as e:
-        raise HTTPException(500, f"Extraction failed: {e!r}")
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    async with _BUSY:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(await file.read())
+            tmp_path = Path(tmp.name)
+
+        try:
+            # OCR is the slow, blocking part — offload it to a worker thread so
+            # the event loop keeps answering /health and rejecting concurrent
+            # uploads with 503. group_mpr is fast pure-Python.
+            raw = await asyncio.to_thread(_extractor.extract_from_pdf, tmp_path, dpi=dpi)
+            grouped = group_mpr(raw)
+        except Exception as e:
+            raise HTTPException(500, f"Extraction failed: {e!r}")
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     return JSONResponse(grouped)
 
