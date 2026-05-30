@@ -41,15 +41,31 @@ ENV SURYA_INFERENCE_BACKEND=llamacpp \
 
 RUN pip install --no-cache-dir uv
 
+# Put the virtualenv OUTSIDE /app so the source code in /app can be bind-mounted
+# at runtime without shadowing the deps (see docker-compose.yml). Code changes
+# then need only `docker compose restart`, not a rebuild.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1
+    # PYTHONPATH=/app: uvicorn is run from /opt/venv/bin (not `uv run`), so /app
+    #   isn't auto-added to sys.path — this makes `import server` find /app/server.py.
+    # PYTHONDONTWRITEBYTECODE: /app is mounted read-only, so don't write .pyc there.
+
 WORKDIR /app
 
 # Step 1: dependencies only (cached unless pyproject/README change)
 COPY pyproject.toml README.md ./
 RUN uv sync --no-install-project --no-dev
 
-# Step 2: source + project install
+# Step 2: source + project install. The COPY gives a working image even when
+# nothing is bind-mounted (e.g. plain `docker run`); the compose bind mount
+# overlays these with the host's copies at runtime.
 COPY server.py extractor.py mpr_grouper.py ./
 RUN uv sync --no-dev
 
 EXPOSE 8000
-CMD ["uv", "run", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Call uvicorn from the relocated venv directly (not `uv run`, which would try
+# to re-sync the project when /app is a bind mount). CWD=/app, so `server:app`
+# imports the live /app/server.py.
+CMD ["/opt/venv/bin/uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

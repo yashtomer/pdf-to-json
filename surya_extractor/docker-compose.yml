@@ -2,6 +2,14 @@
 #   docker compose up -d        # build + run, survives reboots
 #   docker compose logs -f      # watch startup ("[surya2] Ready.")
 #
+# Code changes WITHOUT a rebuild:
+#   The three .py source files are bind-mounted over the image's copies, so the
+#   running container imports the host's code. After editing any of them:
+#     git pull          # (or edit locally)
+#     docker compose restart      # ~10s — re-imports code, model reloads from cache
+#   A full `docker compose up -d --build` is only needed when DEPENDENCIES change
+#   (pyproject.toml / Dockerfile).
+#
 # CPU by default. For GPU, build a vLLM image and uncomment the `deploy` block
 # + set SURYA_INFERENCE_BACKEND=vllm (see README "Deploy on a server").
 
@@ -20,9 +28,16 @@ services:
     volumes:
       # Named volume persists the ~1-2 GB GGUF model across restarts.
       - surya-cache:/root/.cache
+      # Bind-mount the whole source dir over /app, so editing any .py file +
+      # `docker compose restart` picks it up with NO image rebuild. The venv
+      # lives at /opt/venv (set in the Dockerfile), so it is NOT shadowed by
+      # this mount. Read-only — the app never writes into /app.
+      - ./:/app:ro
     environment:
       SURYA_INFERENCE_BACKEND: llamacpp
       SURYA_INFERENCE_PARALLEL: "1"      # raise on GPU for throughput
+      PYTHONPATH: /app                   # so `import server` resolves under the /app mount
+      PYTHONDONTWRITEBYTECODE: "1"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 30s
