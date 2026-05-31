@@ -32,3 +32,17 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  # Auto-restart langchain-pdf if it ever goes unhealthy (a true hang). Scoped by
+  # label so it only touches this container. restart: unless-stopped above already
+  # covers plain crashes/exits and host reboots.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: langchain-pdf-autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "15"
+      AUTOHEAL_START_PERIOD: "30"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
