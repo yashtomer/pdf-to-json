@@ -27,5 +27,13 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8001
 
+    # Auth — comma-separated list of accepted API keys for /extract-grouped.
+    # Callers must send one as the `X-API-Key` header. Empty = auth DISABLED.
+    api_auth_keys: str = ""
+
+    @property
+    def auth_key_set(self) -> set[str]:
+        return {k.strip() for k in self.api_auth_keys.split(",") if k.strip()}
+
 
 settings = Settings()

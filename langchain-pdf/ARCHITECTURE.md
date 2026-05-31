@@ -61,14 +61,21 @@ Anthropic). At ~550 MPRs/month that's ~$8 on Sonnet (~$4 with the batch path).
 ### Step A — `app/main.py` receives the upload
 
 ```python
-@app.post("/extract-grouped")
+@app.post("/extract-grouped", dependencies=[Depends(require_api_key)])
 async def extract_grouped_endpoint(file):
-    # 1. reject if no API key / not a .pdf
+    # 0. require_api_key: check X-API-Key against API_AUTH_KEYS (401 if bad)
+    # 1. reject if Anthropic key not set / not a .pdf
     # 2. save the uploaded bytes to a temp .pdf (pdf2image needs a path)
     # 3. run the blocking work in a thread so the event loop stays free:
     return await asyncio.to_thread(extract_grouped, tmp_path)
     # 4. delete the temp file
 ```
+
+**Auth.** `/extract-grouped` is gated by `require_api_key` — callers send
+`X-API-Key: <key>`, checked (constant-time) against `API_AUTH_KEYS` from `.env`.
+Empty list = open. `/health` and `/docs` stay public so the Docker healthcheck and
+Swagger work. The scheme is registered with FastAPI's `APIKeyHeader`, so Swagger
+shows an **Authorize** button.
 
 Running the blocking call (`asyncio.to_thread`) means `/health` stays responsive
 and **many uploads can be in flight at once** — each is waiting on Anthropic's

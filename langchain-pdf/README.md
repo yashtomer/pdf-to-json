@@ -85,6 +85,33 @@ python batch_extract.py ../samples out/   # submits all PDFs as one -50% batch
 ```
 At ~550 MPRs/month this is roughly **~$4/mo on Sonnet, ~$1.50/mo on Haiku**.
 
+## Authentication
+
+`/extract-grouped` is protected by an **API key** so the public URL can't be
+abused (it spends your Anthropic budget). Callers send it as the `X-API-Key`
+header. `/health` and `/docs` stay open.
+
+```bash
+# 1. generate a strong key
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# 2. put it in .env (comma-separate several to allow multiple callers)
+#    API_AUTH_KEYS=<key1>,<key2>
+docker compose up -d            # up -d (not restart) so .env is re-read
+
+# 3. callers include the header
+curl -X POST -H "X-API-Key: <key>" -F file=@mpr.pdf \
+     https://pdfparser.aeologic.in/extract-grouped
+```
+
+- Missing/invalid key → **401**.
+- `API_AUTH_KEYS` empty → **auth disabled** (open) — the service still runs, so
+  set a key to actually lock it down. `GET /health` reports `auth_enabled`.
+- In Swagger (`/docs`) click **Authorize** and paste a key to call it from the UI.
+
+> For internet-facing payroll data, also keep TLS on (already via Apache) and
+> rotate keys periodically.
+
 ## Configuration (`.env`)
 
 | Key | Default | Notes |
@@ -97,6 +124,7 @@ At ~550 MPRs/month this is roughly **~$4/mo on Sonnet, ~$1.50/mo on Haiku**.
 | `MAX_PAGES` | `25` | pages sent per document |
 | `IMAGE_MAX_EDGE` | `1568` | cap long edge (px); lower = cheaper |
 | `ENABLE_PROMPT_CACHE` | `true` | cache the static system prompt |
+| `API_AUTH_KEYS` | _(empty)_ | comma-separated keys for `X-API-Key`; empty = open |
 | `API_HOST` / `API_PORT` | `0.0.0.0` / `8001` | server bind |
 
 ## Layout

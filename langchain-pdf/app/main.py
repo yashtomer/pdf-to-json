@@ -7,14 +7,30 @@ OpenAPI spec is at /openapi.json.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile
+from fastapi.security import APIKeyHeader
 
 from .config import settings
 from .extractor import extract_grouped
 from .schemas import MPRRecord
+
+# API-key auth on the extraction endpoint. Callers send `X-API-Key: <key>`.
+# Keys come from API_AUTH_KEYS in .env (comma-separated). If none are configured,
+# auth is disabled (open) so the service still works until keys are set.
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(provided: str = Security(_api_key_header)) -> None:
+    allowed = settings.auth_key_set
+    if not allowed:
+        return  # auth disabled — no keys configured
+    if provided and any(hmac.compare_digest(provided, k) for k in allowed):
+        return  # valid key
+    raise HTTPException(401, "Missing or invalid API key (send X-API-Key header).")
 
 app = FastAPI(
     title="LangChain MPR Extractor (Claude)",
@@ -35,6 +51,7 @@ def health() -> dict:
         "status": "ok",
         "model": settings.anthropic_model,
         "api_key_configured": bool(settings.anthropic_api_key),
+        "auth_enabled": bool(settings.auth_key_set),
     }
 
 
@@ -43,6 +60,7 @@ def health() -> dict:
     response_model=list[MPRRecord],
     tags=["extraction"],
     summary="MPR PDF -> grouped JSON",
+    dependencies=[Depends(require_api_key)],
 )
 async def extract_grouped_endpoint(
     file: UploadFile = File(..., description="The MPR PDF file to extract."),
