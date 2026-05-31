@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_max_tokens: int = 4096
     anthropic_timeout: int = 180
+    anthropic_temperature: float = 0.0   # 0 = deterministic + most accurate for extraction
 
     # PDF rendering
     pdf_dpi: int = 150

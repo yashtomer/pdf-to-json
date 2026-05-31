@@ -36,8 +36,12 @@ Follow these rules exactly:
    0.5 / 1.5 are valid.
 3. MULTI-MONTH: if the month is a range like 'January to March 2026' and the
    document includes per-employee Leave Adjustment Certificates, output one record
-   per month and put each employee's leaves for THAT month (from the certificate
-   dates). If there is no per-month data, use 0 for the split months.
+   per month. For each employee, in each month, count ONLY the leave entries whose
+   DATES fall in that specific month, taken from THAT employee's certificate. Do
+   not reuse a value across months, and do not split the combined MPR total evenly.
+   A month with no leave entry for that employee is 0. Sum half-days as written
+   (e.g. two 0.5-day leaves in a month = 1.0; one 0.5-day = 0.5). Re-check each
+   value against the certificate dates before answering.
 4. GROUPED NAMES: if one cell lists several people as a numbered list
    ('1. A 2. B 3. C') sharing one designation, output one employee per name.
 5. CONTINUATION PAGES: a table that continues onto the next page (same work order,
@@ -109,6 +113,7 @@ def _llm() -> ChatAnthropic:
         api_key=settings.anthropic_api_key,
         max_tokens=settings.anthropic_max_tokens,
         timeout=settings.anthropic_timeout,
+        temperature=settings.anthropic_temperature,
     )
 
 
