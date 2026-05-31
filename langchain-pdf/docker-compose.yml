@@ -7,6 +7,8 @@
 #
 # Code-only changes (app/*.py) need NO rebuild — they're bind-mounted:
 #   git pull && docker compose restart
+# Changing .env (model, key, etc.) needs `docker compose up -d` to RECREATE the
+# container — `restart` keeps the old env_file values.
 
 services:
   langchain-pdf:
