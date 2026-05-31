@@ -3,6 +3,9 @@
 Upload a NICSI MPR PDF, get the grouped JSON
 `[{work_order, mpr_month, employees:[{employee_name, designation, leaves}]}]`.
 
+> 📖 **New here? Read [ARCHITECTURE.md](ARCHITECTURE.md)** — the full request flow,
+> the prompt rules, the schemas, cost knobs, and the batch path.
+
 Claude reads the page images and returns the structured result directly (via
 LangChain + Anthropic tool-calling) — **no OCR engine and no GPU**. The MPR-format
 rules we learned (per-row work orders, leaves vs. remarks, multi-month splits,
