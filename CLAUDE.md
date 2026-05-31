@@ -2,38 +2,72 @@
 
 ## What this is
 
-A single HTTP API that extracts **NICSI MPR (Monthly Performance Report) PDFs**
-into structured JSON, using **Surya 2** (a 650M vision-language OCR model). It
-reads even badly-scanned PDFs that Tesseract fails on.
+This repo extracts **NICSI MPR (Monthly Performance Report) PDFs** into
+structured JSON. There are **two** extractor services:
 
-Everything lives in **`surya_extractor/`** (API-only, no web UI). The repo also
-has `samples/` (test PDFs, gitignored) and this file.
+- **`langchain-pdf/`** — **THE LIVE SERVICE** (since 2026-05-31). Sends page
+  images to **Anthropic Claude** (`claude-sonnet-4-6`) via LangChain and returns
+  the grouped JSON directly. No OCR engine, no GPU. Serves
+  `https://pdfparser.aeologic.in` now.
+- **`surya_extractor/`** — the original, now a **stopped fallback.** Local
+  **Surya 2** (650M VLM) OCR + a content-driven Python parser (`mpr_grouper.py`),
+  fully on-prem. Slow on CPU; kept for the case data may not leave the box.
+
+We pivoted to Claude because MPR layouts are **dynamic + scanned**: Claude adapts
+to new formats without per-format parser code, costs ~$8/mo (Sonnet) for ~550
+MPRs/mo, and is ~15 s/doc vs Surya's ~3 min/page on CPU. Verified Claude/Sonnet
+matches expected outputs incl. the hard multi-month leave-certificate case
+(file17). Also in the repo: `samples/` (test PDFs, gitignored) and this file.
 
 ## The one endpoint that matters
 
-Live base URL: **`https://pdfparser.aeologic.in`** (see deployment state below).
+Live base URL: **`https://pdfparser.aeologic.in`**. **Both** services expose the
+same main endpoint, so callers don't change between them:
 
 ```
-POST /extract-grouped   (multipart: file=<pdf>, dpi=150)
+POST /extract-grouped   (multipart: file=<pdf>)
 → [ { "work_order": "M2602757",
       "mpr_month": "April 2026",
       "employees": [ { "employee_name": "...", "designation": "...", "leaves": 0 }, ... ] }, ... ]
 ```
 
-Also: `POST /extract` (raw per-page `blocks` with `html`), `GET /health`, `GET /docs` (Swagger).
+Plus `GET /health`, `GET /docs` (Swagger). Differences: the old `dpi` form field
+is **ignored** by langchain-pdf (set `PDF_DPI` in its `.env`); the raw
+`POST /extract` (per-page `blocks`+`html`) exists **only on Surya**. Bulk/cheap
+path: `langchain-pdf/batch_extract.py` runs the Anthropic Batch API (-50%).
 
-## Files (in surya_extractor/)
+## Files (in langchain-pdf/) — the live service
 
 | File | Role |
 |---|---|
-| `server.py` | FastAPI app + routes. Loads the model once via lifespan. |
+| `app/main.py` | FastAPI app: `POST /extract-grouped`, `GET /health`, Swagger `/docs`. Blocking call runs in a threadpool so concurrent uploads parallelise. |
+| `app/extractor.py` | PDF → page images (pdf2image, downscaled JPEG) → one Claude call via LangChain `with_structured_output`. Domain rules (per-row work orders, leaves vs remarks, multi-month splits, grouped name cells, ALL-CAPS names) live in `SYSTEM_PROMPT`. Post-step `_merge_by_work_order_month` consolidates rows sharing a (work_order, month). |
+| `app/schemas.py` | Pydantic models — also drive Claude's structured output (Field descriptions = extraction instructions). |
+| `app/config.py` | `.env` → typed settings (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `PDF_DPI`, `IMAGE_MAX_EDGE`, …). |
+| `batch_extract.py` | Bulk run via Anthropic Message Batches API (**-50%**) for the monthly job. |
+| `Dockerfile` / `docker-compose.yml` | python:3.12-slim + poppler; runs on host **8080** (same as Surya); `app/` bind-mounted (no-rebuild code changes); `restart: unless-stopped` + label-scoped `autoheal`. **`.env` changes need `docker compose up -d` (not `restart`).** |
+
+## Files (in surya_extractor/) — the stopped fallback
+
+| File | Role |
+|---|---|
+| `server.py` | FastAPI app + routes. Loads the model once via lifespan. Single-flight busy-guard (503 when busy) + threadpool OCR. |
 | `extractor.py` | `SuryaExtractor`: `SuryaInferenceManager()` + `RecognitionPredictor` → full-page OCR returning `blocks` (each with a layout `label` + content as `html`; tables as `<table>`). Includes an idempotent `shutil.move` monkey-patch for Surya's model downloader. |
 | `mpr_grouper.py` | `group_mpr()`: parses the `<table>` HTML (stdlib `html.parser`, `<br>`→space) into the grouped shape. **Content-driven** column mapping (NICSI tables use a two-row colspan header so header columns don't align with data columns). `leaves` = rightmost cell, parsed safely (dates/"-" → 0). Roster reconciliation fills OCR gaps across months of the same work order. |
 | `Dockerfile` | Multi-stage: copies `llama-server` from `ghcr.io/ggml-org/llama.cpp:server`; adds `libssl3`/`libgomp1`; `SURYA_INFERENCE_BACKEND=llamacpp`, `SURYA_INFERENCE_PARALLEL=1`. |
 | `docker-compose.yml` | Host port = `${SURYA_HOST_PORT:-8000}`, bound to `127.0.0.1`. `restart: unless-stopped`, named volume `surya-cache` for the GGUF model, healthcheck. |
 
-## How to run (Docker — the supported path)
+## How to run
 
+**langchain-pdf (the live service):**
+```bash
+cd langchain-pdf
+cp .env.example .env                     # then set ANTHROPIC_API_KEY (clean value, no inline # comment)
+docker compose up -d --build             # host 8080; Swagger at /docs
+# local dev: pip install -r requirements.txt && python -m app.main  (needs poppler)
+```
+
+**surya_extractor (the fallback, Docker):**
 ```bash
 cd surya_extractor
 docker compose up -d --build            # build + run (8000 by default)
@@ -74,28 +108,29 @@ bind-mounted over `/app` (the venv lives at `/opt/venv` so it isn't shadowed;
 
 ## Current deployment state (Hostinger VPS) — LIVE
 
-- **Live since 2026-05-30 at `https://pdfparser.aeologic.in`** (e.g.
-  `https://pdfparser.aeologic.in/health` → `{"status":"ok","model_loaded":true}`,
-  `/docs` for Swagger). External access is **done** — the old nginx/firewall TODO
-  is closed.
-- Server: Hostinger VPS, Ubuntu, 8 vCPU / 31 GB RAM / ~247 GB free, Docker 29.4.2,
-  IP `187.127.159.226`. SSH alias on the dev Mac: `hst` → `ssh aeo@187.127.159.226`.
-  (Note: a Claude Code session may already be running *on* the server as user
-  `aeo`, host `srv1634371`, repo at `~/pdf-to-json` — check `hostname`.)
-- Container runs on **host port 8080**, bound to `127.0.0.1:8080` (8000 was taken
-  by another app). Healthy under `restart: unless-stopped`.
-- **Reverse proxy = Apache (NOT nginx).** This VPS already runs Apache2 on the host
-  fronting ~20 other `*.aeologic.in` vhosts, so surya was added as one more vhost
-  rather than introducing nginx. The vhost is
+- **`https://pdfparser.aeologic.in` is served by `langchain-pdf` (Claude
+  `claude-sonnet-4-6`) since 2026-05-31.** Health →
+  `{"status":"ok","model":"...","api_key_configured":true}`. Surya was switched
+  off (`docker compose down` in `surya_extractor`) but its image/data remain as a
+  fallback — bring it back on a non-8080 port (8080 is now langchain-pdf).
+- Server: Hostinger VPS, Ubuntu, 8 vCPU / 31 GB RAM, Docker, IP `187.127.159.226`.
+  SSH alias `hst` → `ssh aeo@187.127.159.226` (key-based; **no passwordless sudo**).
+  Repo at `~/pdf-to-json`. Docker `enabled` on boot.
+- **langchain-pdf** runs in Docker, container 8000 → **host 8080** (`127.0.0.1`),
+  `restart: unless-stopped` + `langchain-pdf-autoheal`. Config in
+  `langchain-pdf/.env` (gitignored: `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`).
+  Deploy: `git pull && docker compose restart` for code, **`up -d` for `.env`**.
+- **Reverse proxy = Apache (NOT nginx).** Vhost
   `/etc/apache2/sites-available/pdfparser.aeologic.in{,-le-ssl}.conf`:
-  - `ProxyPass / http://localhost:8080/ timeout=900` + `ProxyPassReverse`,
-    `ProxyPreserveHost On`, `X-Forwarded-Proto`.
-  - `Timeout 900` / `ProxyTimeout 900` (the critical CPU-page fix), `LimitRequestBody 0`.
-  - HTTP :80 vhost 301-redirects to HTTPS; :443 vhost serves it.
-  - Modules: `proxy`, `proxy_http`, `ssl` (already enabled).
-- **TLS**: Let's Encrypt cert at `/etc/letsencrypt/live/pdfparser.aeologic.in/`
-  (issued 2026-05-30, valid ~90 days, certbot auto-renew).
-- No GPU on Hostinger → expect ~2.5–4 min/page (fine for low volume).
+  `ProxyPass / http://localhost:8080/ timeout=900` + `ProxyPassReverse`,
+  `ProxyPreserveHost On`, `Timeout 900`/`ProxyTimeout 900`, `LimitRequestBody 0`,
+  and **`RequestReadTimeout header=20-40,MinRate=500 body=0`** (added so large
+  >1 MB uploads don't 408). Modules `proxy proxy_http ssl headers reqtimeout`.
+  (Editing the vhost needs root, which the dev session does not have.)
+- **TLS**: Let's Encrypt at `/etc/letsencrypt/live/pdfparser.aeologic.in/`
+  (certbot auto-renew). HTTP→HTTPS redirect in place.
+- The long Apache timeouts were the Surya CPU-page fix; langchain-pdf is fast
+  (~15 s/doc) so they're now just harmless slack.
 
 ## Git
 

@@ -1,5 +1,10 @@
 # surya_extractor
 
+> **Status: fallback.** Since 2026-05-31 the live service at
+> `https://pdfparser.aeologic.in` is **`../langchain-pdf`** (Claude). This Surya
+> service is the fully-on-prem fallback (no data leaves the box, but slow on CPU).
+> It's stopped on the server — to run it again, use a port other than 8080.
+
 A standalone HTTP API that uses **[Surya 2](https://github.com/datalab-to/surya)** (surya-ocr ≥ 0.20) to extract NICSI MPR data from PDFs. It OCRs each page with Surya's 650M vision-language model and returns the grouped employee JSON.
 
 Runs as a Docker container (or natively on Apple Silicon). CPU works anywhere; a GPU host makes it ~100× faster (see [Deploy on a server](#deploy-on-a-server)).
