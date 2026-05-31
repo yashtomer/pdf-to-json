@@ -126,4 +126,21 @@ def extract_grouped(pdf_path: Path) -> list[MPRRecord]:
     result: MPRDocument = structured.invoke(
         [_system_message(), HumanMessage(content=content)]
     )
-    return result.records
+    return _merge_by_work_order_month(result.records)
+
+
+def _merge_by_work_order_month(records: list[MPRRecord]) -> list[MPRRecord]:
+    """Consolidate records that share the same (work_order, mpr_month) into one,
+    concatenating their employees. The model sometimes emits one record per row
+    when a work order spans several rows; this groups them back together (order
+    preserved). Distinct work orders / months stay separate."""
+    merged: list[MPRRecord] = []
+    index: dict[tuple, MPRRecord] = {}
+    for r in records:
+        key = (r.work_order, r.mpr_month)
+        if key in index:
+            index[key].employees.extend(r.employees)
+        else:
+            index[key] = r
+            merged.append(r)
+    return merged
