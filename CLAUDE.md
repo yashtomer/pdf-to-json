@@ -31,17 +31,22 @@ POST /extract-grouped   (multipart: file=<pdf>)
       "employees": [ { "employee_name": "...", "designation": "...", "leaves": 0 }, ... ] }, ... ]
 ```
 
-Plus `GET /health`, `GET /docs` (Swagger). Differences: the old `dpi` form field
-is **ignored** by langchain-pdf (set `PDF_DPI` in its `.env`); the raw
-`POST /extract` (per-page `blocks`+`html`) exists **only on Surya**. Bulk/cheap
-path: `langchain-pdf/batch_extract.py` runs the Anthropic Batch API (-50%).
+langchain-pdf also has **`POST /extract-workorder`** — parses a NICSI Work Order
+PDF into structured fields + line items, auto-detecting `tender_type`
+(`tier_3` vs `support_engineer`). Both extraction endpoints require an
+`X-API-Key` header (keys in `API_AUTH_KEYS`). Plus `GET /health`, `GET /docs`
+(Swagger). Differences vs Surya: the old `dpi` form field is **ignored** by
+langchain-pdf (set `PDF_DPI` in its `.env`); the raw `POST /extract` (per-page
+`blocks`+`html`) exists **only on Surya**. Bulk/cheap MPR path:
+`langchain-pdf/batch_extract.py` runs the Anthropic Batch API (-50%).
 
 ## Files (in langchain-pdf/) — the live service
 
 | File | Role |
 |---|---|
 | `app/main.py` | FastAPI app: `POST /extract-grouped`, `GET /health`, Swagger `/docs`. Blocking call runs in a threadpool so concurrent uploads parallelise. |
-| `app/extractor.py` | PDF → page images (pdf2image, downscaled JPEG) → one Claude call via LangChain `with_structured_output`. Domain rules (per-row work orders, leaves vs remarks, multi-month splits, grouped name cells, ALL-CAPS names) live in `SYSTEM_PROMPT`. Post-step `_merge_by_work_order_month` consolidates rows sharing a (work_order, month). |
+| `app/extractor.py` | MPR: PDF → page images (pdf2image, downscaled JPEG) → one Claude call via LangChain `with_structured_output`. Domain rules (per-row work orders, leaves vs remarks, multi-month splits, grouped name cells, ALL-CAPS names) live in `SYSTEM_PROMPT`. `temperature=0`. Post-step `_merge_by_work_order_month` consolidates rows sharing a (work_order, month). |
+| `app/workorder.py` | Work Order: `pdftotext -layout` (image fallback for scans) → Claude `with_structured_output(WorkOrder)`. Detects `tender_type` and `designation_level`. |
 | `app/schemas.py` | Pydantic models — also drive Claude's structured output (Field descriptions = extraction instructions). |
 | `app/config.py` | `.env` → typed settings (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `PDF_DPI`, `IMAGE_MAX_EDGE`, …). |
 | `batch_extract.py` | Bulk run via Anthropic Message Batches API (**-50%**) for the monthly job. |

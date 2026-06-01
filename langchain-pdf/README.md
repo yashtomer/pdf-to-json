@@ -62,6 +62,35 @@ Response:
 ]
 ```
 
+## Endpoints
+
+| Endpoint | Input | Output |
+|---|---|---|
+| `POST /extract-grouped` | an MPR PDF | `[{work_order, mpr_month, employees[]}]` |
+| `POST /extract-workorder` | a NICSI **Work Order** PDF | structured work-order fields + line items |
+| `GET /health` | — | `{status, model, api_key_configured, auth_enabled}` |
+
+Both extraction endpoints need the `X-API-Key` header (see Authentication).
+
+### Work Order (`/extract-workorder`)
+Parses a NICSI Work Order into fields + line items, **auto-detecting `tender_type`**:
+- `tier_3` — items are "Level N … Tier 3" (HSN 998314, empanelment no. has "(Tier-3)");
+  `designation_level` = the N.
+- `support_engineer` — items are "Software Application Support Engineer …" (HSN
+  998313); `designation_level` = null.
+
+Work orders are text PDFs, so it extracts text with `pdftotext` (cheaper/accurate;
+falls back to images for scans).
+
+```bash
+curl -X POST -H "X-API-Key: <key>" -F file=@M2511251.pdf \
+     https://pdfparser.aeologic.in/extract-workorder
+# → { work_order_number, project_number, project_name, date_issued, tender_number,
+#     tender_type, user_contact_detail, wo_total_value, taxable_amount,
+#     items: [{ line_no, hsn_code, description, designation_level, manpower_count,
+#               period_text, start_date, end_date, unit_rate, taxable_amount, line_total }] }
+```
+
 ## Cost optimizations (built in)
 
 | Lever | How | Impact |
