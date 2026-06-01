@@ -19,6 +19,7 @@ from .extractor import extract_grouped
 from .schemas import MPRRecord, WorkOrder
 from .workorder import extract_workorder
 from .workorder_local import extract_workorder_local
+from .mpr_local import extract_grouped_vision
 
 # API-key auth on the extraction endpoint. Callers send `X-API-Key: <key>`.
 # Keys come from API_AUTH_KEYS in .env (comma-separated). If none are configured,
@@ -143,6 +144,31 @@ async def extract_workorder_local_endpoint(
                 "result": out["result"].model_dump()}
     except Exception as e:
         raise HTTPException(500, f"Local extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-grouped-qwen3-vl",
+    tags=["extraction"],
+    summary="MPR PDF -> grouped JSON via a LOCAL vision LLM (Ollama qwen3-vl)",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_grouped_qwen3vl_endpoint(
+    file: UploadFile = File(..., description="The MPR PDF (scanned ok)."),
+) -> dict:
+    """Same grouped MPR output as /extract-grouped, but read by a LOCAL vision
+    model (Ollama, default qwen3-vl:8b) instead of Claude — free + private. The
+    response includes `model` and `seconds` for benchmarking."""
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_grouped_vision, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Local vision extraction failed: {e!r}")
     finally:
         tmp_path.unlink(missing_ok=True)
 

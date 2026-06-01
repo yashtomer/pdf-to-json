@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "qwen2.5:14b"
     ollama_timeout: int = 900          # CPU inference is slow; allow minutes
+    # Local VISION model for /extract-grouped-qwen3-vl (scanned MPRs)
+    ollama_vision_model: str = "qwen3-vl:8b"
 
     # API server
     api_host: str = "0.0.0.0"
