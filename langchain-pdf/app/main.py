@@ -36,6 +36,16 @@ def require_api_key(provided: str = Security(_api_key_header)) -> None:
         return  # valid key
     raise HTTPException(401, "Missing or invalid API key (send X-API-Key header).")
 
+
+# Accept PDFs and common image formats (MPRs are often phone photos / scans).
+_ALLOWED_SUFFIXES = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif")
+
+
+def _validate_upload(file: UploadFile) -> None:
+    name = (file.filename or "").lower()
+    if not name.endswith(_ALLOWED_SUFFIXES):
+        raise HTTPException(400, "Please upload a PDF or image file (pdf/jpg/png/…).")
+
 app = FastAPI(
     title="LangChain MPR Extractor (Claude)",
     description=(
@@ -75,8 +85,7 @@ async def extract_grouped_endpoint(
     """
     if not settings.anthropic_api_key:
         raise HTTPException(503, "ANTHROPIC_API_KEY not set — add it to .env and restart.")
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Please upload a .pdf file.")
+    _validate_upload(file)
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(await file.read())
@@ -107,8 +116,7 @@ async def extract_workorder_endpoint(
     `tender_type` (`tier_3` vs `support_engineer`)."""
     if not settings.anthropic_api_key:
         raise HTTPException(503, "ANTHROPIC_API_KEY not set — add it to .env and restart.")
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Please upload a .pdf file.")
+    _validate_upload(file)
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(await file.read())
@@ -134,8 +142,7 @@ async def extract_workorder_local_endpoint(
     (free + private). On a CPU host this is SLOW (minutes/doc). The response
     includes the `model` used and `seconds` taken so you can benchmark it.
     """
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Please upload a .pdf file.")
+    _validate_upload(file)
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(await file.read())
@@ -162,8 +169,7 @@ async def extract_grouped_qwen3vl_endpoint(
     """Same grouped MPR output as /extract-grouped, but read by a LOCAL vision
     model (Ollama, default qwen3-vl:8b) instead of Claude — free + private. The
     response includes `model` and `seconds` for benchmarking."""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Please upload a .pdf file.")
+    _validate_upload(file)
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)
@@ -188,8 +194,7 @@ async def extract_grouped_gemini_endpoint(
     """Same grouped MPR output as /extract-grouped, read by Google Gemini Flash."""
     if not settings.google_api_key:
         raise HTTPException(503, "GOOGLE_API_KEY not set — add it to .env and restart.")
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Please upload a .pdf file.")
+    _validate_upload(file)
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)
@@ -214,8 +219,7 @@ async def extract_workorder_gemini_endpoint(
     """Same work-order output as /extract-workorder, via Google Gemini."""
     if not settings.google_api_key:
         raise HTTPException(503, "GOOGLE_API_KEY not set — add it to .env and restart.")
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Please upload a .pdf file.")
+    _validate_upload(file)
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)

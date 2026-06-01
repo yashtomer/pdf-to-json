@@ -14,9 +14,20 @@ from pathlib import Path
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from pdf2image import convert_from_path
+from PIL import Image
 
 from .config import settings
 from .schemas import MPRRecord, MPRDocument
+
+
+def load_page_images(path: Path) -> list[Image.Image]:
+    """Load a document's pages as PIL images. Handles BOTH PDFs (rendered with
+    pdf2image) and image files (jpg/png/…), detected by content — so a phone photo
+    of an MPR works just like a PDF."""
+    data = path.read_bytes()
+    if data[:5] == b"%PDF-":
+        return convert_from_path(str(path), dpi=settings.pdf_dpi)
+    return [Image.open(io.BytesIO(data))]
 
 # Domain knowledge for NICSI MPRs, learned the hard way on the Surya version.
 SYSTEM_PROMPT = """\
@@ -66,8 +77,8 @@ def _downscale(img):
 
 
 def _pdf_to_image_blocks(pdf_path: Path) -> list[dict]:
-    """Render PDF pages to base64 (JPEG) image blocks for the chat message."""
-    images = convert_from_path(str(pdf_path), dpi=settings.pdf_dpi)
+    """Render PDF/image pages to base64 (JPEG) image blocks for the chat message."""
+    images = load_page_images(pdf_path)
     blocks: list[dict] = []
     for img in images[: settings.max_pages]:
         img = _downscale(img.convert("RGB"))

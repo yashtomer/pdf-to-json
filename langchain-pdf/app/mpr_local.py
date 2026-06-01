@@ -15,10 +15,8 @@ import re
 import time
 from pathlib import Path
 
-from pdf2image import convert_from_path
-
 from .config import settings
-from .extractor import SYSTEM_PROMPT, _merge_by_work_order_month
+from .extractor import SYSTEM_PROMPT, _merge_by_work_order_month, load_page_images
 from .schemas import MPRDocument
 
 _JSON_INSTRUCTION = (
@@ -46,7 +44,7 @@ _VISION_MAX_EDGE = 1300
 
 
 def _pdf_to_base64_images(pdf_path: Path) -> list[str]:
-    images = convert_from_path(str(pdf_path), dpi=settings.pdf_dpi)
+    images = load_page_images(pdf_path)
     out: list[str] = []
     for img in images[: settings.max_pages]:
         img = img.convert("RGB")
