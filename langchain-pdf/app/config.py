@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Cost controls
     enable_prompt_cache: bool = True   # cache the static system prompt (cache_control)
 
+    # Local LLM (Ollama) — used by /extract-workorder-with-local-llm
+    ollama_base_url: str = "http://host.docker.internal:11434"
+    ollama_model: str = "qwen2.5:14b"
+    ollama_timeout: int = 900          # CPU inference is slow; allow minutes
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8001

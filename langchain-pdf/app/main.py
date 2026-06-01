@@ -18,6 +18,7 @@ from .config import settings
 from .extractor import extract_grouped
 from .schemas import MPRRecord, WorkOrder
 from .workorder import extract_workorder
+from .workorder_local import extract_workorder_local
 
 # API-key auth on the extraction endpoint. Callers send `X-API-Key: <key>`.
 # Keys come from API_AUTH_KEYS in .env (comma-separated). If none are configured,
@@ -113,6 +114,35 @@ async def extract_workorder_endpoint(
         return await asyncio.to_thread(extract_workorder, tmp_path)
     except Exception as e:
         raise HTTPException(500, f"Extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-workorder-with-local-llm",
+    tags=["extraction"],
+    summary="Work Order PDF -> JSON via a LOCAL LLM (Ollama)",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_workorder_local_endpoint(
+    file: UploadFile = File(..., description="The NICSI Work Order PDF."),
+) -> dict:
+    """Same as /extract-workorder but the model runs on this server via Ollama
+    (free + private). On a CPU host this is SLOW (minutes/doc). The response
+    includes the `model` used and `seconds` taken so you can benchmark it.
+    """
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        out = await asyncio.to_thread(extract_workorder_local, tmp_path)
+        return {"model": out["model"], "seconds": out["seconds"],
+                "result": out["result"].model_dump()}
+    except Exception as e:
+        raise HTTPException(500, f"Local extraction failed: {e!r}")
     finally:
         tmp_path.unlink(missing_ok=True)
 

@@ -23,6 +23,10 @@ services:
       - "127.0.0.1:${LCPDF_HOST_PORT:-8080}:8000"
     env_file:
       - .env                    # ANTHROPIC_API_KEY, model, etc. injected as env vars
+    extra_hosts:
+      # so the container can reach the host's Ollama (qwen2.5) for the local-LLM
+      # work-order endpoint. OLLAMA_BASE_URL defaults to host.docker.internal:11434.
+      - "host.docker.internal:host-gateway"
     volumes:
       # Bind-mount source so `git pull && docker compose restart` picks up code
       # changes with no rebuild (deps live in the image, not shadowed).
