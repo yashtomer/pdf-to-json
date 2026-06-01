@@ -35,9 +35,10 @@ Field sources:
   project_name = 'Project Name'; date_issued = the 'Date'.
 - tender_number = the 'Empanelment No'; valid_till_date = the 'Valid Till:' date.
 - pi_number = 'PI Number' (often blank → empty string).
-- user_contact_detail = the Project Manager NAME in the sentence 'the concerned
-  Project Manager (<name>, <title>) at NICSI…'. Do NOT use the 'Issued to' agency
-  contact person.
+- user_contact_detail = ONLY the Project Manager's NAME (the text BEFORE the first
+  comma) in 'the concerned Project Manager (<name>, <title>) at NICSI…'. Example:
+  from '(Neeraj Chawla, Deputy General Manager)' output exactly 'Neeraj Chawla' —
+  name only, no title, no comma. Do NOT use the 'Issued to' agency contact person.
 - wo_total_value = 'Grand Total (in Rs.)' — DIGITS ONLY (strip commas/decimals as
   printed; it is a whole-rupee figure).
 - taxable_amount (top level) = 'Total Amount in Rs.' — DIGITS ONLY.
