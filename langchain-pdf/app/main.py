@@ -16,7 +16,8 @@ from fastapi.security import APIKeyHeader
 
 from .config import settings
 from .extractor import extract_grouped
-from .schemas import MPRRecord
+from .schemas import MPRRecord, WorkOrder
+from .workorder import extract_workorder
 
 # API-key auth on the extraction endpoint. Callers send `X-API-Key: <key>`.
 # Keys come from API_AUTH_KEYS in .env (comma-separated). If none are configured,
@@ -83,6 +84,34 @@ async def extract_grouped_endpoint(
         # flight at once (the Anthropic call is I/O-bound, so this parallelizes).
         return await asyncio.to_thread(extract_grouped, tmp_path)
     except Exception as e:  # surface a clean error to the caller
+        raise HTTPException(500, f"Extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-workorder",
+    response_model=WorkOrder,
+    tags=["extraction"],
+    summary="Work Order PDF -> structured JSON",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_workorder_endpoint(
+    file: UploadFile = File(..., description="The NICSI Work Order PDF."),
+) -> WorkOrder:
+    """Parse a NICSI Work Order into structured fields + line items. Auto-detects
+    `tender_type` (`tier_3` vs `support_engineer`)."""
+    if not settings.anthropic_api_key:
+        raise HTTPException(503, "ANTHROPIC_API_KEY not set — add it to .env and restart.")
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_workorder, tmp_path)
+    except Exception as e:
         raise HTTPException(500, f"Extraction failed: {e!r}")
     finally:
         tmp_path.unlink(missing_ok=True)
