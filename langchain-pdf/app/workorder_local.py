@@ -44,7 +44,10 @@ def extract_workorder_local(pdf_path: Path) -> dict:
         "prompt": LOCAL_PROMPT + text,
         "format": "json",
         "stream": False,
-        "options": {"temperature": 0, "num_predict": 2000},
+        # num_ctx MUST be large enough to hold the whole work-order text, or
+        # Ollama silently truncates it (default is ~2k) and the model loses the
+        # table → empty/partial output. Work orders are ~5-6k tokens.
+        "options": {"temperature": 0, "num_predict": 2000, "num_ctx": 16384},
     }).encode()
     url = settings.ollama_base_url.rstrip("/") + "/api/generate"
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
