@@ -73,6 +73,12 @@ def reconcile_workorder(wo: WorkOrder) -> WorkOrder:
 
     for it in items:
         it.taxable_amount = it.line_total
+
+    # Top-level taxable_amount is, by definition, the sum of the line totals
+    # ("Total Amount in Rs."). Derive it from the (reconciled) items so a model
+    # mis-read of that figure can't slip through. NICSI rounds to the rupee.
+    if items:
+        wo.taxable_amount = str(round(sum(it.line_total for it in items)))
     return wo
 
 
