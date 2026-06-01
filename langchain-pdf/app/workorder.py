@@ -22,14 +22,62 @@ from .schemas import WorkOrder
 _LEVEL_RE = re.compile(r"\bLevel\s+(\d+)", re.IGNORECASE)
 
 
-def fix_designation_levels(wo: WorkOrder) -> WorkOrder:
-    """designation_level is, by definition, the N in 'Level N' in the description.
-    Derive it deterministically so a model mis-read (e.g. 'Level 3' -> 5) can't
-    slip through. No 'Level' (e.g. Support Engineer rows) -> None."""
+def _num(s) -> float | None:
+    try:
+        return float(str(s).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def reconcile_workorder(wo: WorkOrder) -> WorkOrder:
+    """Deterministic corrections so model mis-reads can't slip through.
+
+    1. designation_level = the N in 'Level N' in the description (None if no Level).
+    2. Arithmetic: each line_total = manpower × period × unit_rate. unit_rate (a
+       small column) is the most mis-read field. When line_totals are trustworthy
+       — they sum to the printed grand total (taxable_amount) — and a row's
+       arithmetic doesn't hold against the period the other rows agree on, recompute
+       that row's unit_rate from its line_total. Keep item.taxable_amount == line_total.
+    """
     for it in wo.items:
         m = _LEVEL_RE.search(it.description or "")
         it.designation_level = int(m.group(1)) if m else None
+
+    import statistics
+
+    items = wo.items
+
+    def implied(it):
+        if it.manpower_count and it.unit_rate and it.line_total:
+            return it.line_total / (it.manpower_count * it.unit_rate)
+        return None
+
+    def off(it, P):  # rupee discrepancy of a row against period P
+        return abs(it.manpower_count * P * it.unit_rate - it.line_total)
+
+    valid = [p for p in (implied(it) for it in items) if p]
+    if len(valid) >= 2:
+        P0 = statistics.median(valid)
+        consistent = [it for it in items
+                      if it.manpower_count and it.unit_rate and off(it, P0) <= 1.0]
+        grand = _num(wo.taxable_amount)
+        line_sum = sum(it.line_total for it in items)
+        trustworthy = grand is None or abs(line_sum - grand) <= max(2.0, 0.005 * grand)
+        # Only act when a strict MAJORITY of rows agree on the period (so single-item
+        # or fractional-period work orders are never "corrected" against noise).
+        if trustworthy and len(consistent) > len(valid) / 2:
+            P = statistics.median([implied(it) for it in consistent])
+            for it in items:
+                if it.manpower_count and it.unit_rate and off(it, P) > 1.0:
+                    it.unit_rate = round(it.line_total / (it.manpower_count * P), 2)
+
+    for it in items:
+        it.taxable_amount = it.line_total
     return wo
+
+
+# kept for backwards-compat import name
+fix_designation_levels = reconcile_workorder
 
 SYSTEM_PROMPT = """\
 You read NICSI **Work Order** PDFs and return the structured fields. You are given
