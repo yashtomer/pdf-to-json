@@ -13,6 +13,9 @@ langchain>=0.3
 langchain-anthropic>=0.3
 anthropic>=0.40               # used directly by batch_extract.py (Message Batches API, -50%)
 
+# Google Gemini (langchain)
+langchain-google-genai>=2.0
+
 # PDF -> images
 pdf2image>=1.17               # needs the system package `poppler` installed
 pillow>=10.0

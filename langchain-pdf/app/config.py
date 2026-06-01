@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Local VISION model for /extract-grouped-qwen3-vl (scanned MPRs)
     ollama_vision_model: str = "qwen3-vl:8b"
 
+    # Google Gemini — used by /extract-grouped-gemini and /extract-workorder-gemini
+    google_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8001

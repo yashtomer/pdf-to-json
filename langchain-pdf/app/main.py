@@ -20,6 +20,7 @@ from .schemas import MPRRecord, WorkOrder
 from .workorder import extract_workorder
 from .workorder_local import extract_workorder_local
 from .mpr_local import extract_grouped_vision
+from .gemini import extract_grouped_gemini, extract_workorder_gemini
 
 # API-key auth on the extraction endpoint. Callers send `X-API-Key: <key>`.
 # Keys come from API_AUTH_KEYS in .env (comma-separated). If none are configured,
@@ -54,6 +55,7 @@ def health() -> dict:
         "status": "ok",
         "model": settings.anthropic_model,
         "api_key_configured": bool(settings.anthropic_api_key),
+        "gemini_configured": bool(settings.google_api_key),
         "auth_enabled": bool(settings.auth_key_set),
     }
 
@@ -169,6 +171,58 @@ async def extract_grouped_qwen3vl_endpoint(
         return await asyncio.to_thread(extract_grouped_vision, tmp_path)
     except Exception as e:
         raise HTTPException(500, f"Local vision extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-grouped-gemini",
+    response_model=list[MPRRecord],
+    tags=["extraction"],
+    summary="MPR PDF -> grouped JSON via Google Gemini (vision)",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_grouped_gemini_endpoint(
+    file: UploadFile = File(..., description="The MPR PDF (scanned ok)."),
+) -> list[MPRRecord]:
+    """Same grouped MPR output as /extract-grouped, read by Google Gemini Flash."""
+    if not settings.google_api_key:
+        raise HTTPException(503, "GOOGLE_API_KEY not set — add it to .env and restart.")
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_grouped_gemini, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Gemini extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-workorder-gemini",
+    response_model=WorkOrder,
+    tags=["extraction"],
+    summary="Work Order PDF -> JSON via Google Gemini",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_workorder_gemini_endpoint(
+    file: UploadFile = File(..., description="The NICSI Work Order PDF."),
+) -> WorkOrder:
+    """Same work-order output as /extract-workorder, via Google Gemini."""
+    if not settings.google_api_key:
+        raise HTTPException(503, "GOOGLE_API_KEY not set — add it to .env and restart.")
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_workorder_gemini, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Gemini extraction failed: {e!r}")
     finally:
         tmp_path.unlink(missing_ok=True)
 
