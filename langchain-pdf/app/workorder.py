@@ -8,6 +8,7 @@ back to page images.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,18 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from .config import settings
 from .extractor import _pdf_to_image_blocks  # reuse the image renderer for the fallback
 from .schemas import WorkOrder
+
+_LEVEL_RE = re.compile(r"\bLevel\s+(\d+)", re.IGNORECASE)
+
+
+def fix_designation_levels(wo: WorkOrder) -> WorkOrder:
+    """designation_level is, by definition, the N in 'Level N' in the description.
+    Derive it deterministically so a model mis-read (e.g. 'Level 3' -> 5) can't
+    slip through. No 'Level' (e.g. Support Engineer rows) -> None."""
+    for it in wo.items:
+        m = _LEVEL_RE.search(it.description or "")
+        it.designation_level = int(m.group(1)) if m else None
+    return wo
 
 SYSTEM_PROMPT = """\
 You read NICSI **Work Order** PDFs and return the structured fields. You are given
@@ -90,4 +103,5 @@ def extract_workorder(pdf_path: Path) -> WorkOrder:
             *_pdf_to_image_blocks(pdf_path),
         ]
     structured = _llm().with_structured_output(WorkOrder)
-    return structured.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)])
+    wo = structured.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)])
+    return fix_designation_levels(wo)

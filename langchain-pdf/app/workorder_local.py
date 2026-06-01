@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .config import settings
 from .schemas import WorkOrder
-from .workorder import _pdf_text
+from .workorder import _pdf_text, fix_designation_levels
 
 # Explicit prompt (incl. the designation_level rule) — local models need the
 # numeric rules spelled out; this is what took qwen2.5:14b from 21/23 to 23/23.
@@ -59,4 +59,5 @@ def extract_workorder_local(pdf_path: Path) -> dict:
     seconds = time.time() - t
 
     data = json.loads(resp["response"])
-    return {"result": WorkOrder(**data), "model": settings.ollama_model, "seconds": round(seconds, 1)}
+    return {"result": fix_designation_levels(WorkOrder(**data)),
+            "model": settings.ollama_model, "seconds": round(seconds, 1)}

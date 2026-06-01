@@ -18,7 +18,7 @@ from .extractor import SYSTEM_PROMPT as MPR_PROMPT
 from .extractor import _merge_by_work_order_month, _pdf_to_image_blocks
 from .schemas import MPRRecord, MPRDocument, WorkOrder
 from .workorder import SYSTEM_PROMPT as WO_PROMPT
-from .workorder import _pdf_text
+from .workorder import _pdf_text, fix_designation_levels
 
 
 def _structured(schema):
@@ -51,6 +51,7 @@ def extract_workorder_gemini(pdf_path: Path) -> WorkOrder:
     """Work Order PDF -> structured fields, from the extracted text via Gemini."""
     text = _pdf_text(pdf_path)
     content = [{"type": "text", "text": "Extract the work order. Here is its text:\n\n" + text}]
-    return _structured(WorkOrder).invoke(
+    wo = _structured(WorkOrder).invoke(
         [SystemMessage(content=WO_PROMPT), HumanMessage(content=content)]
     )
+    return fix_designation_levels(wo)
