@@ -31,6 +31,8 @@ LOCAL_PROMPT = """You extract data from a NICSI Work Order. Return ONLY JSON wit
 - items: array, one object PER TABLE ROW, each with: line_no, hsn_code, description, designation_level, manpower_count, period_text, start_date, end_date (deployment From/To, exactly as printed), unit_rate (THAT ROW's Unit Rate per Month, with decimals, no commas), line_total (THAT ROW's Total Amount, no commas).
 - designation_level RULE: read the item's description. If it starts with "Level <number>" (e.g. "Level 7 (Minimum work experience...)"), set designation_level to that number as an INTEGER (e.g. 7, or 9 for "Level 9"). Only set it to null when the description has no "Level" (e.g. "Software Application Support Engineer").
 IMPORTANT: each row has its OWN unit_rate and line_total — do NOT copy row 1's numbers into row 2. Strip thousands commas (3,40,005.60 -> 340005.60).
+DATES: copy every date EXACTLY as it appears, character-for-character. If it is "09/02/2026" keep "09/02/2026"; if it is "11-FEB-2026" keep "11-FEB-2026". NEVER convert between slash and month-name formats.
+NUMBERS: wo_total_value and taxable_amount must be STRINGS of digits (e.g. "902715").
 
 WORK ORDER TEXT:
 """

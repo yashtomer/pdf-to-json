@@ -82,7 +82,9 @@ class WorkOrder(BaseModel):
     Field descriptions instruct the model. Lenient (defaults + ignore extras) so
     that a local-LLM JSON response still validates."""
 
-    model_config = ConfigDict(extra="ignore")
+    # coerce_numbers_to_str: local models often emit wo_total_value/taxable_amount
+    # as ints (902715) where the schema wants strings — accept and stringify them.
+    model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
 
     work_order_number: str = Field(default="", description="Work Order No, e.g. 'M2511251'.")
     project_number: str = Field(default="", description="Project No, e.g. 'S250694GNKL'.")
