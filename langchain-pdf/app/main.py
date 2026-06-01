@@ -64,7 +64,7 @@ def health() -> dict:
     "/extract-grouped",
     response_model=list[MPRRecord],
     tags=["extraction"],
-    summary="MPR PDF -> grouped JSON",
+    summary=f"MPR PDF -> grouped JSON  ·  Claude ({settings.anthropic_model})",
     dependencies=[Depends(require_api_key)],
 )
 async def extract_grouped_endpoint(
@@ -97,7 +97,7 @@ async def extract_grouped_endpoint(
     "/extract-workorder",
     response_model=WorkOrder,
     tags=["extraction"],
-    summary="Work Order PDF -> structured JSON",
+    summary=f"Work Order PDF -> structured JSON  ·  Claude ({settings.anthropic_model})",
     dependencies=[Depends(require_api_key)],
 )
 async def extract_workorder_endpoint(
@@ -124,7 +124,7 @@ async def extract_workorder_endpoint(
 @app.post(
     "/extract-workorder-with-local-llm",
     tags=["extraction"],
-    summary="Work Order PDF -> JSON via a LOCAL LLM (Ollama)",
+    summary=f"Work Order PDF -> JSON  ·  local Ollama ({settings.ollama_model})",
     dependencies=[Depends(require_api_key)],
 )
 async def extract_workorder_local_endpoint(
@@ -153,7 +153,7 @@ async def extract_workorder_local_endpoint(
 @app.post(
     "/extract-grouped-qwen3-vl",
     tags=["extraction"],
-    summary="MPR PDF -> grouped JSON via a LOCAL vision LLM (Ollama qwen3-vl)",
+    summary=f"MPR PDF -> grouped JSON  ·  local vision Ollama ({settings.ollama_vision_model})",
     dependencies=[Depends(require_api_key)],
 )
 async def extract_grouped_qwen3vl_endpoint(
@@ -179,7 +179,7 @@ async def extract_grouped_qwen3vl_endpoint(
     "/extract-grouped-gemini",
     response_model=list[MPRRecord],
     tags=["extraction"],
-    summary="MPR PDF -> grouped JSON via Google Gemini (vision)",
+    summary=f"MPR PDF -> grouped JSON  ·  Google Gemini ({settings.gemini_model})",
     dependencies=[Depends(require_api_key)],
 )
 async def extract_grouped_gemini_endpoint(
@@ -205,7 +205,7 @@ async def extract_grouped_gemini_endpoint(
     "/extract-workorder-gemini",
     response_model=WorkOrder,
     tags=["extraction"],
-    summary="Work Order PDF -> JSON via Google Gemini",
+    summary=f"Work Order PDF -> JSON  ·  Google Gemini ({settings.gemini_model})",
     dependencies=[Depends(require_api_key)],
 )
 async def extract_workorder_gemini_endpoint(
