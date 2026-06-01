@@ -18,7 +18,7 @@ from .extractor import SYSTEM_PROMPT as MPR_PROMPT
 from .extractor import _merge_by_work_order_month, _pdf_to_image_blocks
 from .schemas import MPRRecord, MPRDocument, WorkOrder
 from .workorder import SYSTEM_PROMPT as WO_PROMPT
-from .workorder import _pdf_text, fix_designation_levels
+from .workorder import run_workorder
 
 
 def _structured(schema):
@@ -48,20 +48,10 @@ def extract_grouped_gemini(pdf_path: Path) -> list[MPRRecord]:
 
 
 def extract_workorder_gemini(pdf_path: Path) -> WorkOrder:
-    """Work Order PDF -> structured fields via Gemini. Uses the extracted text for
-    digital PDFs; falls back to page IMAGES for scanned work orders (Gemini is
-    multimodal), so scanned NICSI work orders work too."""
-    text = _pdf_text(pdf_path)
-    if len(text.strip()) >= 200:
-        content: list = [
-            {"type": "text", "text": "Extract the work order. Here is its text:\n\n" + text}
-        ]
-    else:
-        content = [
-            {"type": "text", "text": "Extract the work order from these page images."},
-            *_pdf_to_image_blocks(pdf_path),
-        ]
-    wo = _structured(WorkOrder).invoke(
-        [SystemMessage(content=WO_PROMPT), HumanMessage(content=content)]
-    )
-    return fix_designation_levels(wo)
+    """Work Order PDF -> structured fields via Gemini. Text for digital PDFs, page
+    images (+ majority vote) for scanned ones — same shared pipeline as Claude."""
+    def invoke(content):
+        return _structured(WorkOrder).invoke(
+            [SystemMessage(content=WO_PROMPT), HumanMessage(content=content)]
+        )
+    return run_workorder(pdf_path, invoke)

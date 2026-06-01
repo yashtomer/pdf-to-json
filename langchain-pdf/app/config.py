@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # PDF rendering
     pdf_dpi: int = 150
     max_pages: int = 25
+    # Scanned work orders only: run the extraction N times and take the per-field
+    # majority, to smooth out vision-OCR variance on degraded digits. 1 = off.
+    workorder_scan_runs: int = 3
     image_max_edge: int = 1568     # cap long edge (Anthropic's effective max);
                                    # lower = fewer image tokens, some accuracy risk
 

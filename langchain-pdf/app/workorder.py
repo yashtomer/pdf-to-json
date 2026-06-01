@@ -144,18 +144,66 @@ def _llm() -> ChatAnthropic:
     )
 
 
-def extract_workorder(pdf_path: Path) -> WorkOrder:
+def _mode(values):
+    """Most common non-empty value; falls back to the first value."""
+    from collections import Counter
+    vals = [v for v in values if v not in (None, "")]
+    if not vals:
+        return values[0] if values else None
+    return Counter(vals).most_common(1)[0][0]
+
+
+_WO_FIELDS = ("work_order_number", "project_number", "project_name", "date_issued",
+              "wo_total_value", "tender_number", "valid_till_date", "pi_number",
+              "user_contact_detail", "doc_type", "tender_type", "taxable_amount")
+_ITEM_FIELDS = ("line_no", "hsn_code", "description", "designation_level",
+                "manpower_count", "period_text", "start_date", "end_date",
+                "unit_rate", "taxable_amount", "line_total")
+
+
+def _vote_workorders(wos: list[WorkOrder]) -> WorkOrder:
+    """Per-field majority vote across repeated extractions of the same doc — smooths
+    out vision-OCR variance (e.g. a degraded 'Level 3' read as '5' in 1 of 3 runs)."""
+    base = wos[0]
+    for f in _WO_FIELDS:
+        setattr(base, f, _mode([getattr(w, f) for w in wos]))
+    n_items = _mode([len(w.items) for w in wos]) or len(base.items)
+    voted = []
+    for i in range(n_items):
+        rows = [w.items[i] for w in wos if i < len(w.items)]
+        it = rows[0]
+        for f in _ITEM_FIELDS:
+            setattr(it, f, _mode([getattr(r, f) for r in rows]))
+        voted.append(it)
+    base.items = voted
+    return base
+
+
+def run_workorder(pdf_path: Path, invoke) -> WorkOrder:
+    """Shared work-order pipeline. `invoke(content) -> WorkOrder` is the model call.
+    Digital PDFs: one text pass. Scanned PDFs (image fallback): an N-run majority
+    vote to absorb OCR variance. Then deterministic reconciliation."""
     text = _pdf_text(pdf_path)
     if len(text.strip()) >= 200:
         content: list = [
             {"type": "text", "text": "Extract the work order. Here is its text:\n\n" + text}
         ]
+        wo = invoke(content)
     else:
-        # scanned / no text → fall back to page images
         content = [
             {"type": "text", "text": "Extract the work order from these page images."},
             *_pdf_to_image_blocks(pdf_path),
         ]
+        runs = max(1, settings.workorder_scan_runs)
+        wos = [invoke(content) for _ in range(runs)]
+        wo = _vote_workorders(wos) if len(wos) > 1 else wos[0]
+    return reconcile_workorder(wo)
+
+
+def _invoke_claude(content):
     structured = _llm().with_structured_output(WorkOrder)
-    wo = structured.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)])
-    return fix_designation_levels(wo)
+    return structured.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)])
+
+
+def extract_workorder(pdf_path: Path) -> WorkOrder:
+    return run_workorder(pdf_path, _invoke_claude)
