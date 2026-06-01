@@ -48,9 +48,19 @@ def extract_grouped_gemini(pdf_path: Path) -> list[MPRRecord]:
 
 
 def extract_workorder_gemini(pdf_path: Path) -> WorkOrder:
-    """Work Order PDF -> structured fields, from the extracted text via Gemini."""
+    """Work Order PDF -> structured fields via Gemini. Uses the extracted text for
+    digital PDFs; falls back to page IMAGES for scanned work orders (Gemini is
+    multimodal), so scanned NICSI work orders work too."""
     text = _pdf_text(pdf_path)
-    content = [{"type": "text", "text": "Extract the work order. Here is its text:\n\n" + text}]
+    if len(text.strip()) >= 200:
+        content: list = [
+            {"type": "text", "text": "Extract the work order. Here is its text:\n\n" + text}
+        ]
+    else:
+        content = [
+            {"type": "text", "text": "Extract the work order from these page images."},
+            *_pdf_to_image_blocks(pdf_path),
+        ]
     wo = _structured(WorkOrder).invoke(
         [SystemMessage(content=WO_PROMPT), HumanMessage(content=content)]
     )
