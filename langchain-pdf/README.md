@@ -64,13 +64,27 @@ Response:
 
 ## Endpoints
 
-| Endpoint | Input | Output |
-|---|---|---|
-| `POST /extract-grouped` | an MPR PDF | `[{work_order, mpr_month, employees[]}]` |
-| `POST /extract-workorder` | a NICSI **Work Order** PDF | structured work-order fields + line items |
-| `GET /health` | — | `{status, model, api_key_configured, auth_enabled}` |
+All accept a **PDF or image** (jpg/png/webp/tif/… — MPRs are often phone photos).
+All extraction endpoints require the `X-API-Key` header (see Authentication).
 
-Both extraction endpoints need the `X-API-Key` header (see Authentication).
+| Endpoint | Doc | Engine | Output |
+|---|---|---|---|
+| `POST /extract-grouped` | MPR | **Claude** (`ANTHROPIC_MODEL`) | `[{work_order, mpr_month, employees[]}]` |
+| `POST /extract-grouped-gemini` | MPR | **Gemini** (`GEMINI_MODEL`) | same |
+| `POST /extract-grouped-qwen3-vl` | MPR | **local** Ollama vision (`OLLAMA_VISION_MODEL`) | `{model, seconds, records[]}` |
+| `POST /extract-workorder` | Work Order | **Claude** | structured fields + line items |
+| `POST /extract-workorder-gemini` | Work Order | **Gemini** | same |
+| `POST /extract-workorder-with-local-llm` | Work Order | **local** Ollama text (`OLLAMA_MODEL`) | `{model, seconds, result}` |
+| `GET /health` | — | — | `{status, model, api_key_configured, gemini_configured, auth_enabled}` |
+
+100% accuracy/cost note: **Gemini `gemini-3.5-flash`** and **Claude Sonnet** both
+match expected output incl. the hardest multi-month MPR; Gemini Flash is cheapest.
+
+### Reliability (work orders)
+Deterministic layers run after the model so misreads can't slip through:
+`designation_level` ← "Level N" in the description · level ← unit_rate ordering
+(blurry-digit fix) · `unit_rate` ← line-total arithmetic · `taxable_amount` ←
+sum of line totals · **scanned docs:** N-run majority vote (`WORKORDER_SCAN_RUNS`).
 
 ### Work Order (`/extract-workorder`)
 Parses a NICSI Work Order into fields + line items, **auto-detecting `tender_type`**:
@@ -161,12 +175,27 @@ curl -X POST -H "X-API-Key: <key>" -F file=@mpr.pdf \
 ```
 langchain-pdf/
 ├── app/
-│   ├── config.py      # .env -> typed settings
-│   ├── schemas.py     # Pydantic models (also guide Claude's output)
-│   ├── extractor.py   # PDF -> images -> Claude -> records
-│   └── main.py        # FastAPI app + Swagger
-├── batch_extract.py   # bulk run via Message Batches API (-50%)
+│   ├── config.py        # .env -> typed settings
+│   ├── schemas.py       # Pydantic models (also guide the model's output)
+│   ├── extractor.py     # MPR via Claude; load_page_images (PDF or image)
+│   ├── workorder.py     # Work Order via Claude + deterministic reconciliation + ensemble
+│   ├── workorder_local.py  # Work Order via local Ollama (text)
+│   ├── mpr_local.py     # MPR via local Ollama vision (qwen3-vl)
+│   ├── gemini.py        # MPR + Work Order via Google Gemini
+│   └── main.py          # FastAPI app + auth + Swagger (6 endpoints)
+├── batch_extract.py     # bulk MPR run via Message Batches API (-50%)
 ├── .env.example
 ├── requirements.txt
 └── README.md
 ```
+
+## Key `.env` settings (full list in `.env.example`)
+
+| Key | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | Claude endpoints |
+| `GOOGLE_API_KEY` / `GEMINI_MODEL` | Gemini endpoints (`gemini-3.5-flash` = 100%; flash-lite cheaper) |
+| `OLLAMA_BASE_URL` / `OLLAMA_MODEL` / `OLLAMA_VISION_MODEL` | local Ollama endpoints |
+| `API_AUTH_KEYS` | comma-separated `X-API-Key` tokens (empty = open) |
+| `WORKORDER_SCAN_RUNS` | majority-vote runs for **scanned** work orders (default 3) |
+| `PDF_DPI` / `IMAGE_MAX_EDGE` | render resolution / token control |

@@ -31,24 +31,38 @@ POST /extract-grouped   (multipart: file=<pdf>)
       "employees": [ { "employee_name": "...", "designation": "...", "leaves": 0 }, ... ] }, ... ]
 ```
 
-langchain-pdf also has **`POST /extract-workorder`** — parses a NICSI Work Order
-PDF into structured fields + line items, auto-detecting `tender_type`
-(`tier_3` vs `support_engineer`). Both extraction endpoints require an
-`X-API-Key` header (keys in `API_AUTH_KEYS`). Plus `GET /health`, `GET /docs`
-(Swagger). Differences vs Surya: the old `dpi` form field is **ignored** by
-langchain-pdf (set `PDF_DPI` in its `.env`); the raw `POST /extract` (per-page
-`blocks`+`html`) exists **only on Surya**. Bulk/cheap MPR path:
-`langchain-pdf/batch_extract.py` runs the Anthropic Batch API (-50%).
+**Six extraction endpoints** (each accepts a **PDF or image** — jpg/png/…; MPRs
+are often phone photos). `-gemini` = Google Gemini, `-with-local-llm` /
+`-qwen3-vl` = local Ollama; the rest = Claude:
+- MPR: `POST /extract-grouped` (Claude), `/extract-grouped-gemini`, `/extract-grouped-qwen3-vl`
+- Work Order: `POST /extract-workorder` (Claude), `/extract-workorder-gemini`, `/extract-workorder-with-local-llm`
+  — auto-detects `tender_type` (`tier_3` vs `support_engineer`).
+
+All extraction endpoints require an **`X-API-Key`** header (keys in
+`API_AUTH_KEYS`, constant-time compared). Open: `GET /health`, `GET /docs`.
+**100% model:** Gemini `gemini-3.5-flash` or Claude Sonnet (flash-lite is cheaper
+but ~14/18 on the hardest multi-month MPR). Bulk MPR path:
+`langchain-pdf/batch_extract.py` (Anthropic Batch API, -50%). The raw `POST
+/extract` (per-page `blocks`+`html`) exists **only on Surya**.
+
+**Work-order reliability layers** (deterministic, after the model — see
+`reconcile_workorder`): designation_level ← "Level N" in description; level ←
+unit_rate ordering (fixes blurry digits); unit_rate ← line-total arithmetic;
+taxable_amount ← sum of line totals; scanned docs ← N-run majority vote
+(`WORKORDER_SCAN_RUNS`).
 
 ## Files (in langchain-pdf/) — the live service
 
 | File | Role |
 |---|---|
-| `app/main.py` | FastAPI app: `POST /extract-grouped`, `GET /health`, Swagger `/docs`. Blocking call runs in a threadpool so concurrent uploads parallelise. |
-| `app/extractor.py` | MPR: PDF → page images (pdf2image, downscaled JPEG) → one Claude call via LangChain `with_structured_output`. Domain rules (per-row work orders, leaves vs remarks, multi-month splits, grouped name cells, ALL-CAPS names) live in `SYSTEM_PROMPT`. `temperature=0`. Post-step `_merge_by_work_order_month` consolidates rows sharing a (work_order, month). |
-| `app/workorder.py` | Work Order: `pdftotext -layout` (image fallback for scans) → Claude `with_structured_output(WorkOrder)`. Detects `tender_type` and `designation_level`. |
-| `app/schemas.py` | Pydantic models — also drive Claude's structured output (Field descriptions = extraction instructions). |
-| `app/config.py` | `.env` → typed settings (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `PDF_DPI`, `IMAGE_MAX_EDGE`, …). |
+| `app/main.py` | FastAPI: the 6 extraction endpoints + `/health` + Swagger. `_validate_upload` accepts pdf/jpg/png/…; `require_api_key` enforces `X-API-Key`. Blocking calls run in a threadpool. |
+| `app/extractor.py` | MPR via Claude: `load_page_images` (PDF→pdf2image OR image→PIL, by `%PDF-` magic) → downscaled JPEG → one `with_structured_output(MPRDocument)` call. Domain rules in `SYSTEM_PROMPT`. `temperature=0`. `_merge_by_work_order_month` consolidates (work_order, month). |
+| `app/workorder.py` | Work Order via Claude: `pdftotext -layout` (image fallback for scans, `WORKORDER_SCAN_RUNS` majority vote) → `WorkOrder`. `reconcile_workorder` = the deterministic reliability layers (level from description + rate-ordering, unit_rate + taxable_amount arithmetic). Shared `run_workorder` used by the Gemini path too. |
+| `app/gemini.py` | MPR (vision) + Work Order (text/image) via Google Gemini (langchain-google-genai). |
+| `app/mpr_local.py` | MPR via local Ollama **vision** (qwen3-vl); no `format=json` (returns empty) — JSON parsed from the reply; dynamic `num_ctx` for multi-page. |
+| `app/workorder_local.py` | Work Order via local Ollama **text** (qwen2.5:14b); raw `/api/generate` + `num_ctx=16384`. |
+| `app/schemas.py` | Pydantic models — also drive structured output. `WorkOrder`/`WorkOrderItem` lenient (defaults + `coerce_numbers_to_str`) for local JSON. |
+| `app/config.py` | `.env` → typed settings (Anthropic, Gemini, Ollama, auth, ensemble, DPI). |
 | `batch_extract.py` | Bulk run via Anthropic Message Batches API (**-50%**) for the monthly job. |
 | `Dockerfile` / `docker-compose.yml` | python:3.12-slim + poppler; runs on host **8080** (same as Surya); `app/` bind-mounted (no-rebuild code changes); `restart: unless-stopped` + label-scoped `autoheal`. **`.env` changes need `docker compose up -d` (not `restart`).** |
 
