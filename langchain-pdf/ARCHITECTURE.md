@@ -1,9 +1,15 @@
 # Architecture & Code Walkthrough — langchain-pdf
 
-A plain-language guide to **how this service works** — from the moment a PDF is
-uploaded to the moment grouped JSON comes back. This is the **live** MPR extractor
-(`https://pdfparser.aeologic.in`); it uses **Anthropic Claude** instead of a local
-OCR model. (For the on-prem Surya fallback, see `../surya_extractor/ARCHITECTURE.md`.)
+A plain-language guide to **how this service works** — from the moment a document
+is uploaded to the moment structured JSON comes back. This is the **live** service
+(`https://pdfparser.aeologic.in`). It started as an MPR extractor on **Anthropic
+Claude** and now does **two document types** (MPR + NICSI Work Order) across
+**three engines** (Claude, Google Gemini, local Ollama) — **6 endpoints** in all.
+It accepts **PDFs *or* images** (phone photos of MPRs are common). (For the
+on-prem Surya fallback, see `../surya_extractor/ARCHITECTURE.md`.)
+
+The MPR-on-Claude flow below (§1–§6) is the core; §6b–§6d cover work orders, the
+deterministic reliability layers, and the other engines.
 
 ---
 
@@ -32,17 +38,22 @@ OCR model. (For the on-prem Surya fallback, see `../surya_extractor/ARCHITECTURE
        "employees": [ {employee_name, designation, leaves}, … ] } ]
 ```
 
-**Three files, three jobs:**
+**The files and their jobs:**
 
-| File | Job | Analogy |
-|---|---|---|
-| `app/main.py` | Receive the HTTP request, hand off, send the answer back | The waiter |
-| `app/extractor.py` | Turn a PDF into the grouped data using Claude | The reader |
-| `app/schemas.py` | Define the exact output shape (and instruct Claude) | The order form |
+| File | Job |
+|---|---|
+| `app/main.py` | HTTP layer: the 6 endpoints, auth, upload validation, threadpool offload |
+| `app/extractor.py` | MPR via Claude; `load_page_images` (PDF *or* image); `SYSTEM_PROMPT`; merge |
+| `app/workorder.py` | Work Order via Claude; `reconcile_workorder` reliability layers; scanned-doc ensemble |
+| `app/gemini.py` | MPR + Work Order via Google Gemini |
+| `app/mpr_local.py` / `app/workorder_local.py` | the same two jobs via **local Ollama** |
+| `app/schemas.py` | Pydantic models — define the output shape *and* instruct the model |
+| `app/config.py` | `.env` → typed settings |
 
-There is **no OCR engine and no GPU** — Claude does both the reading *and* the
-structuring in one call. The cleverness that needed ~600 lines of parser code in
-the Surya version lives in a **prompt** here (see §4).
+For the cloud engines there is **no OCR engine and no GPU** — the model does both
+the reading *and* the structuring in one call. The cleverness that needed ~600
+lines of parser code in the Surya version lives in a **prompt** (see §4) plus a
+small deterministic reconciliation layer for work orders (§6c).
 
 ---
 
@@ -64,12 +75,17 @@ Anthropic). At ~550 MPRs/month that's ~$8 on Sonnet (~$4 with the batch path).
 @app.post("/extract-grouped", dependencies=[Depends(require_api_key)])
 async def extract_grouped_endpoint(file):
     # 0. require_api_key: check X-API-Key against API_AUTH_KEYS (401 if bad)
-    # 1. reject if Anthropic key not set / not a .pdf
-    # 2. save the uploaded bytes to a temp .pdf (pdf2image needs a path)
+    # 1. _validate_upload: accept pdf / jpg / png / webp / tif / … (not just PDF)
+    # 2. save the uploaded bytes to a temp file
     # 3. run the blocking work in a thread so the event loop stays free:
     return await asyncio.to_thread(extract_grouped, tmp_path)
     # 4. delete the temp file
 ```
+
+The six extraction endpoints all follow this shape (auth → validate → temp file →
+threadpool). They differ only in the extractor they call — `/extract-grouped`
+(Claude), `/extract-grouped-gemini`, `/extract-grouped-qwen3-vl` for MPRs, and the
+three `/extract-workorder*` for work orders.
 
 **Auth.** `/extract-grouped` is gated by `require_api_key` — callers send
 `X-API-Key: <key>`, checked (constant-time) against `API_AUTH_KEYS` from `.env`.
@@ -94,10 +110,11 @@ return _merge_by_work_order_month(result.records)
 
 Three things happen:
 
-1. **`_pdf_to_image_blocks`** renders each page with `pdf2image`, **downscales**
-   it to `IMAGE_MAX_EDGE` (so we don't pay for resolution Claude won't use), and
-   encodes it as a base64 **JPEG** block (small upload; token cost is by pixel
-   size, not bytes).
+1. **`_pdf_to_image_blocks`** calls **`load_page_images`**, which detects the
+   upload by content (`%PDF-` magic bytes): a PDF is rendered with `pdf2image`, an
+   **image** (jpg/png/…) is opened directly with PIL — so a phone photo of an MPR
+   works the same as a PDF. Each page is **downscaled** to `IMAGE_MAX_EDGE` (don't
+   pay for resolution the model won't use) and encoded as a base64 **JPEG** block.
 2. **One Claude call** via LangChain `with_structured_output(MPRDocument)`. This
    forces Claude to answer by calling a tool whose arguments are our schema — so
    the reply is already validated structured data, no parsing. All pages go in
@@ -164,6 +181,55 @@ stay separate. It's the only "parsing" code left, and it's ~10 lines.
 
 ---
 
+## 6b. Work Orders (`app/workorder.py`)
+
+A NICSI Work Order is a different document → `POST /extract-workorder` →
+`WorkOrder` (header fields + line items, auto-detecting `tender_type` = `tier_3`
+vs `support_engineer`). Most work orders are **digital text PDFs**, so the shared
+`run_workorder` pipeline prefers **text** (`pdftotext -layout`, cheaper + exact)
+and falls back to **page images** only when there's little/no text (a scan).
+
+## 6c. The reliability layer — `reconcile_workorder`
+
+This is the answer to "don't just trust the LLM on the numbers." After the model
+returns, deterministic rules fix the fields that *can* be derived — turning a
+model that's right *most* of the time into output that's *consistently* right:
+
+1. **`designation_level`** = the N in "Level N" in the description (not a separate
+   guess).
+2. **Level from `unit_rate` ordering** — within a work order, the rate rises with
+   level, and the rate is read *reliably* even when a scanned digit isn't. So a
+   level that's inconsistent with where its rate sits among the rows is corrected
+   to the unique consistent value (fixed M2601875's blurry "Level 3" read as "5").
+3. **`unit_rate`** — `line_total = manpower × period × unit_rate`; when the line
+   totals are trustworthy (they sum to the grand total) a row's outlier rate is
+   recomputed from its line total.
+4. **`taxable_amount`** = the rounded sum of the line totals (not an independent
+   read).
+5. **Scanned-doc ensemble** — for the image path only, `run_workorder` extracts
+   `WORKORDER_SCAN_RUNS` times (default 3) and **majority-votes** each field, to
+   absorb OCR variance on degraded scans, *then* reconciles.
+
+Each rule is guarded so it can't over-correct (single-item/fractional-period work
+orders are left alone; the level fix needs ≥3 rows sharing one increment and a
+unique bound).
+
+## 6d. The other engines — Gemini & local Ollama
+
+The same two jobs, different model — selected by **endpoint**, not by config:
+
+- **`app/gemini.py`** — `/extract-grouped-gemini` and `/extract-workorder-gemini`
+  via `langchain-google-genai`. Reuses the *same* prompts, schemas, merge, and
+  `run_workorder` reconciliation — only the LLM differs. `gemini-3.5-flash` matches
+  100% (incl. the hard multi-month MPR); flash-lite is cheaper but weaker on it.
+- **`app/mpr_local.py`** (MPR) & **`app/workorder_local.py`** (work order) — local
+  **Ollama**, free + private. Notes: vision models return empty under Ollama's
+  `format=json`, so we ask for JSON in the prompt and parse it; `num_ctx` is sized
+  to the page count; the local work-order model is **text-only** (can't read scans).
+  Fast on a GPU box, slow on the CPU server (~minutes/doc).
+
+---
+
 ## 7. Cost knobs (`.env`)
 
 | Knob | Effect |
@@ -211,9 +277,12 @@ to look first when the output is wrong.
 
 | File | Key functions | Notes |
 |---|---|---|
-| `app/main.py` | `extract_grouped_endpoint`, `health`, `run` | FastAPI + Swagger; threadpool offload. |
-| `app/extractor.py` | `extract_grouped`, `_pdf_to_image_blocks`, `_downscale`, `_system_message`, `_merge_by_work_order_month`, `SYSTEM_PROMPT` | The whole pipeline + the domain rules. |
-| `app/schemas.py` | `Employee`, `MPRRecord`, `MPRDocument` | Output shape = Claude's tool schema. |
-| `app/config.py` | `Settings` | `.env` → typed settings. |
-| `batch_extract.py` | `_build_request`, `_records_from_message`, `main` | Batch API (-50%) bulk run. |
+| `app/main.py` | the 6 `*_endpoint`s, `health`, `require_api_key`, `_validate_upload`, `run` | FastAPI + auth + Swagger; threadpool offload. |
+| `app/extractor.py` | `extract_grouped`, `load_page_images`, `_pdf_to_image_blocks`, `_downscale`, `_merge_by_work_order_month`, `SYSTEM_PROMPT` | MPR-via-Claude pipeline + domain rules + PDF/image loading. |
+| `app/workorder.py` | `run_workorder`, `reconcile_workorder`, `_fix_levels_by_rate`, `_vote_workorders`, `extract_workorder`, `SYSTEM_PROMPT` | Work-order pipeline, reliability layers, scanned-doc ensemble. |
+| `app/gemini.py` | `extract_grouped_gemini`, `extract_workorder_gemini` | Same jobs via Google Gemini. |
+| `app/mpr_local.py` / `app/workorder_local.py` | `extract_grouped_vision` / `extract_workorder_local` | Same jobs via local Ollama. |
+| `app/schemas.py` | `Employee`, `MPRRecord`, `MPRDocument`, `WorkOrder`, `WorkOrderItem` | Output shapes = the models' tool schemas. |
+| `app/config.py` | `Settings` | `.env` → typed settings (Anthropic, Gemini, Ollama, auth, ensemble). |
+| `batch_extract.py` | `_build_request`, `_records_from_message`, `main` | Batch API (-50%) bulk MPR run. |
 | `Dockerfile` / `docker-compose.yml` | — | python:3.12-slim + poppler; host 8080; `app/` bind-mounted; autoheal. `.env` change → `docker compose up -d`. |
