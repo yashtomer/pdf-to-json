@@ -29,6 +29,36 @@ def _num(s) -> float | None:
         return None
 
 
+_INC_RE = re.compile(r"with\s+([\w]+)\s+increment", re.IGNORECASE)
+
+
+def _increment(desc: str) -> str:
+    m = _INC_RE.search(desc or "")
+    return m.group(1).lower() if m else ""
+
+
+def _fix_levels_by_rate(items) -> None:
+    """Within a work order, unit_rate increases monotonically with the level (same
+    increment). The rate is read reliably; the level digit on a blurry scan is not.
+    So if a row's level is inconsistent with where its rate sits among the others
+    AND the bound is unique, correct the level (and the 'Level N' in the description).
+    Skipped unless all rows share the same increment (keeps the monotonic assumption
+    valid)."""
+    rated = [it for it in items if it.designation_level is not None and it.unit_rate]
+    if len(rated) < 3 or len({_increment(it.description) for it in rated}) > 1:
+        return
+    for it in rated:
+        lower = [o.designation_level for o in rated if o.unit_rate < it.unit_rate]
+        upper = [o.designation_level for o in rated if o.unit_rate > it.unit_rate]
+        lo = (max(lower) + 1) if lower else None
+        hi = (min(upper) - 1) if upper else None
+        cur = it.designation_level
+        out_of_range = (lo is not None and cur < lo) or (hi is not None and cur > hi)
+        if out_of_range and lo is not None and hi is not None and lo == hi:
+            it.designation_level = lo
+            it.description = re.sub(r"Level\s+\d+", f"Level {lo}", it.description or "", count=1)
+
+
 def reconcile_workorder(wo: WorkOrder) -> WorkOrder:
     """Deterministic corrections so model mis-reads can't slip through.
 
@@ -42,6 +72,8 @@ def reconcile_workorder(wo: WorkOrder) -> WorkOrder:
     for it in wo.items:
         m = _LEVEL_RE.search(it.description or "")
         it.designation_level = int(m.group(1)) if m else None
+
+    _fix_levels_by_rate(wo.items)
 
     import statistics
 
