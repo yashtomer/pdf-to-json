@@ -31,6 +31,27 @@ def _num(s) -> float | None:
 
 _INC_RE = re.compile(r"with\s+([\w]+)\s+increment", re.IGNORECASE)
 
+# Each work-order category has a distinct, unambiguous signature in the line-item
+# descriptions / HSN code, so we can classify deterministically and not rely on the
+# model getting `tender_type` right (especially on scanned docs read from images).
+_GIS_RE = re.compile(r"gis\s+digitization", re.IGNORECASE)
+_TIER3_RE = re.compile(r"tier\s*-?\s*3", re.IGNORECASE)
+_SE_RE = re.compile(r"software\s+application\s+support\s+engineer", re.IGNORECASE)
+
+
+def _classify_tender_type(wo: WorkOrder) -> str | None:
+    """Infer tender_type from the line items. Returns None if nothing matches (then
+    we keep whatever the model produced)."""
+    descs = " ".join((it.description or "") for it in wo.items)
+    hsns = {(it.hsn_code or "").strip() for it in wo.items}
+    if _GIS_RE.search(descs) or "998319" in hsns:
+        return "gis"
+    if _TIER3_RE.search(descs) or "998314" in hsns or "(tier-3)" in (wo.tender_number or "").lower():
+        return "tier_3"
+    if _SE_RE.search(descs) or "998313" in hsns:
+        return "support_engineer"
+    return None
+
 
 def _increment(desc: str) -> str:
     m = _INC_RE.search(desc or "")
@@ -72,6 +93,13 @@ def reconcile_workorder(wo: WorkOrder) -> WorkOrder:
     for it in wo.items:
         m = _LEVEL_RE.search(it.description or "")
         it.designation_level = int(m.group(1)) if m else None
+
+    # Deterministically set the category from the line-item signatures (overrides a
+    # model misread). gis/support_engineer rows have no 'Level', so their
+    # designation_level is already None from the loop above.
+    t = _classify_tender_type(wo)
+    if t:
+        wo.tender_type = t
 
     _fix_levels_by_rate(wo.items)
 
@@ -127,6 +155,9 @@ Identify the work-order TYPE and set `tender_type`:
   the number N from 'Level N'.
 - 'support_engineer' — line items read 'Software Application Support Engineer (…)';
   HSN/SAC is 998313; the Empanelment No has no '(Tier-3)'. Set designation_level
+  to null for these items.
+- 'gis' — line items read 'GIS Digitization …' (e.g. 'GIS Digitization Supervisor');
+  HSN/SAC is 998319; the Empanelment No has no '(Tier-3)'. Set designation_level
   to null for these items.
 
 Field sources:

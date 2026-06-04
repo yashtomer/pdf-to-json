@@ -61,12 +61,12 @@ class WorkOrderItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     line_no: int = Field(default=0, description="The S.No of the line item (1, 2, ...).")
-    hsn_code: str = Field(default="", description="The HSN/SAC code, e.g. '998314' (tier_3) or '998313' (support_engineer).")
+    hsn_code: str = Field(default="", description="The HSN/SAC code, e.g. '998314' (tier_3), '998313' (support_engineer), or '998319' (gis).")
     description: str = Field(default="", description="The full item description text.")
     designation_level: int | None = Field(
         default=None,
         description="For tier_3 rows the number N from 'Level N' (e.g. 7). null for "
-        "support_engineer rows (which have no Level).",
+        "support_engineer and gis rows (which have no Level).",
     )
     manpower_count: int = Field(default=0, description="No. of Persons Required (column A).")
     period_text: str = Field(default="", description="The Required Period text (column B), e.g. 'Five Month(s)'.")
@@ -102,9 +102,10 @@ class WorkOrder(BaseModel):
     doc_type: str = Field(default="work_order", description="Always 'work_order'.")
     tender_type: str = Field(
         default="",
-        description="'tier_3' if line items are 'Level N … Tier 3' (HSN 998314, tender contains "
-        "'(Tier-3)'); 'support_engineer' if line items are 'Software Application Support Engineer' "
-        "(HSN 998313).",
+        description="The work-order category, read from the line-item descriptions/HSN: "
+        "'tier_3' = 'Level N … Tier 3' (HSN 998314, tender contains '(Tier-3)'); "
+        "'support_engineer' = 'Software Application Support Engineer' (HSN 998313); "
+        "'gis' = 'GIS Digitization …' (HSN 998319).",
     )
     items: list[WorkOrderItem] = Field(default_factory=list, description="The line items from the order table.")
     taxable_amount: str = Field(default="", description="'Total Amount in Rs.' — the sum of line taxable amounts BEFORE taxes, DIGITS ONLY, e.g. '765013'.")
