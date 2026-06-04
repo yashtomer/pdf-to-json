@@ -92,6 +92,12 @@ Parses a NICSI Work Order into fields + line items, **auto-detecting `tender_typ
   `designation_level` = the N.
 - `support_engineer` — items are "Software Application Support Engineer …" (HSN
   998313); `designation_level` = null.
+- `gis` — items are "GIS Digitization …" (HSN 998319, empanelment no. has no
+  "(Tier-3)"); `designation_level` = null.
+
+After the model, a deterministic classifier re-derives `tender_type` from the
+line-item descriptions/HSN so a misread can't slip through (priority
+`gis` → `tier_3` → `support_engineer`).
 
 Work orders are text PDFs, so it extracts text with `pdftotext` (cheaper/accurate;
 falls back to images for scans).

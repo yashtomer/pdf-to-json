@@ -36,7 +36,7 @@ are often phone photos). `-gemini` = Google Gemini, `-with-local-llm` /
 `-qwen3-vl` = local Ollama; the rest = Claude:
 - MPR: `POST /extract-grouped` (Claude), `/extract-grouped-gemini`, `/extract-grouped-qwen3-vl`
 - Work Order: `POST /extract-workorder` (Claude), `/extract-workorder-gemini`, `/extract-workorder-with-local-llm`
-  — auto-detects `tender_type` (`tier_3` vs `support_engineer`).
+  — auto-detects `tender_type` (`tier_3` vs `support_engineer` vs `gis`).
 
 All extraction endpoints require an **`X-API-Key`** header (keys in
 `API_AUTH_KEYS`, constant-time compared). Open: `GET /health`, `GET /docs`.
@@ -46,8 +46,9 @@ but ~14/18 on the hardest multi-month MPR). Bulk MPR path:
 /extract` (per-page `blocks`+`html`) exists **only on Surya**.
 
 **Work-order reliability layers** (deterministic, after the model — see
-`reconcile_workorder`): designation_level ← "Level N" in description; level ←
-unit_rate ordering (fixes blurry digits); unit_rate ← line-total arithmetic;
+`reconcile_workorder`): designation_level ← "Level N" in description;
+tender_type ← line-item description/HSN signature (`gis`→`tier_3`→`support_engineer`);
+level ← unit_rate ordering (fixes blurry digits); unit_rate ← line-total arithmetic;
 taxable_amount ← sum of line totals; scanned docs ← N-run majority vote
 (`WORKORDER_SCAN_RUNS`).
 

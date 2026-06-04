@@ -185,7 +185,7 @@ stay separate. It's the only "parsing" code left, and it's ~10 lines.
 
 A NICSI Work Order is a different document → `POST /extract-workorder` →
 `WorkOrder` (header fields + line items, auto-detecting `tender_type` = `tier_3`
-vs `support_engineer`). Most work orders are **digital text PDFs**, so the shared
+vs `support_engineer` vs `gis`). Most work orders are **digital text PDFs**, so the shared
 `run_workorder` pipeline prefers **text** (`pdftotext -layout`, cheaper + exact)
 and falls back to **page images** only when there's little/no text (a scan).
 
@@ -197,6 +197,11 @@ model that's right *most* of the time into output that's *consistently* right:
 
 1. **`designation_level`** = the N in "Level N" in the description (not a separate
    guess).
+1b. **`tender_type`** = re-derived from the line-item descriptions/HSN — `gis`
+   ("GIS Digitization" / HSN 998319) → `tier_3` ("Tier 3" / HSN 998314 / "(Tier-3)"
+   tender) → `support_engineer` ("Software Application Support Engineer" / HSN
+   998313). The category has an unambiguous signature, so we don't rely on the
+   model labelling it right (especially on scans).
 2. **Level from `unit_rate` ordering** — within a work order, the rate rises with
    level, and the rate is read *reliably* even when a scanned digit isn't. So a
    level that's inconsistent with where its rate sits among the rows is corrected
