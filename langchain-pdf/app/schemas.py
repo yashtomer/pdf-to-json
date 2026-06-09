@@ -109,3 +109,25 @@ class WorkOrder(BaseModel):
     )
     items: list[WorkOrderItem] = Field(default_factory=list, description="The line items from the order table.")
     taxable_amount: str = Field(default="", description="'Total Amount in Rs.' — the sum of line taxable amounts BEFORE taxes, DIGITS ONLY, e.g. '765013'.")
+
+
+# ---------------------------------------------------------------------------
+# Payment Advice documents (RTGS/NEFT 'Transfer of Fund' letters)
+# ---------------------------------------------------------------------------
+
+class PaymentBill(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    bill_no: str = Field(default="", description="The 'Bill No' of the row, e.g. 'AEO/26-27/017170'. Reassemble if it wraps across lines.")
+    work_order: str = Field(default="", description="The 'PO. No.' column — the work-order M-number, e.g. 'M2602089'. NOT the 'Project No.' (the S…/C… code).")
+
+
+class PaymentAdvice(BaseModel):
+    """A NICSI Payment Advice → the net amount paid, the advice date, and the list
+    of enclosed bills (each mapped to its work order)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    pa_amount: int = Field(default=0, description="Net amount transferred — the 'Payment being made' grand total on the Total row (AFTER TDS & GST-TDS), digits only.")
+    pa_date: str = Field(default="", description="The advice/letter date as DD-MON-YYYY (expand a 2-digit year, e.g. '26-MAY-26' → '26-MAY-2026').")
+    bills: list[PaymentBill] = Field(default_factory=list, description="One entry per enclosed bill row in the table.")

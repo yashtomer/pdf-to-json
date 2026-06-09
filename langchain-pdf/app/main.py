@@ -16,8 +16,9 @@ from fastapi.security import APIKeyHeader
 
 from .config import settings
 from .extractor import extract_grouped
-from .schemas import MPRRecord, WorkOrder
+from .schemas import MPRRecord, PaymentAdvice, WorkOrder
 from .workorder import extract_workorder
+from .payment_advice import extract_payment_advice
 from .workorder_local import extract_workorder_local
 from .mpr_local import extract_grouped_vision
 from .gemini import extract_grouped_gemini, extract_workorder_gemini
@@ -123,6 +124,34 @@ async def extract_workorder_endpoint(
         tmp_path = Path(tmp.name)
     try:
         return await asyncio.to_thread(extract_workorder, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-payment-advice",
+    response_model=PaymentAdvice,
+    tags=["extraction"],
+    summary=f"Payment Advice PDF -> JSON  ·  Claude ({settings.anthropic_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_payment_advice_endpoint(
+    file: UploadFile = File(..., description="The NICSI Payment Advice (RTGS/NEFT transfer) PDF."),
+) -> PaymentAdvice:
+    """Parse a NICSI Payment Advice into the net amount paid (`pa_amount`), the advice
+    date (`pa_date`), and the enclosed `bills` — each mapping a `bill_no` to its
+    `work_order` (the PO. No.)."""
+    if not settings.anthropic_api_key:
+        raise HTTPException(503, "ANTHROPIC_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_payment_advice, tmp_path)
     except Exception as e:
         raise HTTPException(500, f"Extraction failed: {e!r}")
     finally:
