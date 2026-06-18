@@ -131,3 +131,24 @@ class PaymentAdvice(BaseModel):
     pa_amount: int = Field(default=0, description="Net amount transferred — the 'Payment being made' grand total on the Total row (AFTER TDS & GST-TDS), digits only.")
     pa_date: str = Field(default="", description="The advice/letter date as DD-MON-YYYY (expand a 2-digit year, e.g. '26-MAY-26' → '26-MAY-2026').")
     bills: list[PaymentBill] = Field(default_factory=list, description="One entry per enclosed bill row in the table.")
+
+
+# ---------------------------------------------------------------------------
+# EPF Form 11 (Declaration Form) — member identity + KYC details
+# ---------------------------------------------------------------------------
+
+class Form11(BaseModel):
+    """EPFO 'New Form No. 11 - Declaration Form' → the member's identity + KYC
+    fields. The form is hand-filled and scanned, so the Field descriptions double
+    as read instructions for the vision model."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    employee_name: str = Field(default="", description="Item 1 'Name of Member (Aadhar Name)', exactly as written.")
+    uan_no: str = Field(default="", description="The 'Universal Account Number (UAN)' (a 12-digit number; digits only).")
+    aadhar_no: str = Field(default="", description="KYC 'AADHAR Number' (a 12-digit number; strip spaces → digits only).")
+    email: str = Field(default="", description="The 'eMail ID' on the form.")
+    phone: str = Field(default="", description="The 'Mobile No' (digits only).")
+    account_no: str = Field(default="", description="KYC 'Bank Account No.' (digits only).")
+    ifsc: str = Field(default="", description="KYC 'IFS Code', e.g. 'SBIN0020980' (uppercase letters+digits, no spaces).")
+    pan_no: str = Field(default="", description="KYC 'Permanent Account Number (PAN)', a 10-char alphanumeric code, uppercase.")

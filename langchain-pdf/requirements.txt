@@ -16,6 +16,9 @@ anthropic>=0.40               # used directly by batch_extract.py (Message Batch
 # Google Gemini (langchain)
 langchain-google-genai>=2.0
 
+# Groq (langchain) — fast hosted Llama 4 (vision), used by /extract-form11-groq
+langchain-groq>=0.2
+
 # PDF -> images
 pdf2image>=1.17               # needs the system package `poppler` installed
 pillow>=10.0

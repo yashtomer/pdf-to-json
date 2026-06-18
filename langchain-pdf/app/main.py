@@ -16,9 +16,10 @@ from fastapi.security import APIKeyHeader
 
 from .config import settings
 from .extractor import extract_grouped
-from .schemas import MPRRecord, PaymentAdvice, WorkOrder
+from .schemas import Form11, MPRRecord, PaymentAdvice, WorkOrder
 from .workorder import extract_workorder
 from .payment_advice import extract_payment_advice
+from .form11 import extract_form11, extract_form11_groq
 from .workorder_local import extract_workorder_local
 from .mpr_local import extract_grouped_vision
 from .gemini import extract_grouped_gemini, extract_workorder_gemini
@@ -152,6 +153,61 @@ async def extract_payment_advice_endpoint(
         tmp_path = Path(tmp.name)
     try:
         return await asyncio.to_thread(extract_payment_advice, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-form11",
+    response_model=Form11,
+    tags=["extraction"],
+    summary=f"EPF Form 11 (Declaration) -> JSON  ·  Claude ({settings.anthropic_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_form11_endpoint(
+    file: UploadFile = File(..., description="The EPF Form 11 (Declaration Form) PDF or image."),
+) -> Form11:
+    """Parse an EPFO Form 11 (Declaration Form) into the member's identity + KYC
+    fields: `employee_name`, `uan_no`, `aadhar_no`, `email`, `phone`, `account_no`,
+    `ifsc` and `pan_no`. The form is a hand-filled scan, so Claude reads the image."""
+    if not settings.anthropic_api_key:
+        raise HTTPException(503, "ANTHROPIC_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_form11, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-form11-groq",
+    response_model=Form11,
+    tags=["extraction"],
+    summary=f"EPF Form 11 (Declaration) -> JSON  ·  Groq ({settings.groq_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_form11_groq_endpoint(
+    file: UploadFile = File(..., description="The EPF Form 11 (Declaration Form) PDF or image."),
+) -> Form11:
+    """Same Form 11 output as /extract-form11, read by a vision-capable Llama 4 on
+    Groq instead of Claude (fast + a generous free tier)."""
+    if not settings.groq_api_key:
+        raise HTTPException(503, "GROQ_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_form11_groq, tmp_path)
     except Exception as e:
         raise HTTPException(500, f"Extraction failed: {e!r}")
     finally:

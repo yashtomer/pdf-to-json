@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
 
+    # Groq — fast hosted inference for open models. Used by /extract-form11-groq.
+    # The default is a vision-capable Llama 4 model (needed to read scanned forms).
+    groq_api_key: str = ""
+    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8001
