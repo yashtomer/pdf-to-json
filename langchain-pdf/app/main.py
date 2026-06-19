@@ -23,6 +23,11 @@ from .form11 import extract_form11, extract_form11_groq
 from .workorder_local import extract_workorder_local
 from .mpr_local import extract_grouped_vision
 from .gemini import extract_grouped_gemini, extract_workorder_gemini
+from .groq import (
+    extract_grouped_groq,
+    extract_payment_advice_groq,
+    extract_workorder_groq,
+)
 
 # API-key auth on the extraction endpoint. Callers send `X-API-Key: <key>`.
 # Keys come from API_AUTH_KEYS in .env (comma-separated). If none are configured,
@@ -312,6 +317,82 @@ async def extract_workorder_gemini_endpoint(
         return await asyncio.to_thread(extract_workorder_gemini, tmp_path)
     except Exception as e:
         raise HTTPException(500, f"Gemini extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-grouped-groq",
+    response_model=list[MPRRecord],
+    tags=["extraction"],
+    summary=f"MPR PDF -> grouped JSON  ·  Groq ({settings.groq_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_grouped_groq_endpoint(
+    file: UploadFile = File(..., description="The MPR PDF (scanned ok)."),
+) -> list[MPRRecord]:
+    """Same grouped MPR output as /extract-grouped, read by a vision-capable Llama 4
+    on Groq instead of Claude (fast + a generous free tier)."""
+    if not settings.groq_api_key:
+        raise HTTPException(503, "GROQ_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_grouped_groq, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Groq extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-workorder-groq",
+    response_model=WorkOrder,
+    tags=["extraction"],
+    summary=f"Work Order PDF -> JSON  ·  Groq ({settings.groq_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_workorder_groq_endpoint(
+    file: UploadFile = File(..., description="The NICSI Work Order PDF."),
+) -> WorkOrder:
+    """Same work-order output as /extract-workorder, via Groq (Llama 4)."""
+    if not settings.groq_api_key:
+        raise HTTPException(503, "GROQ_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_workorder_groq, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Groq extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-payment-advice-groq",
+    response_model=PaymentAdvice,
+    tags=["extraction"],
+    summary=f"Payment Advice PDF -> JSON  ·  Groq ({settings.groq_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_payment_advice_groq_endpoint(
+    file: UploadFile = File(..., description="The NICSI Payment Advice (RTGS/NEFT transfer) PDF."),
+) -> PaymentAdvice:
+    """Same Payment Advice output as /extract-payment-advice, via Groq (Llama 4)."""
+    if not settings.groq_api_key:
+        raise HTTPException(503, "GROQ_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_payment_advice_groq, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"Groq extraction failed: {e!r}")
     finally:
         tmp_path.unlink(missing_ok=True)
 

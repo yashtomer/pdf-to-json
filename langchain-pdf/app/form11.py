@@ -108,7 +108,9 @@ def _invoke_groq(content) -> Form11:
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY is not set. Add it to the .env file and restart.")
     llm = ChatGroq(model=settings.groq_model, api_key=settings.groq_api_key, temperature=0)
-    structured = llm.with_structured_output(Form11)
+    # json_schema (constrained decoding) over the default tool-calling — Groq's
+    # tool-calling 400s on strict schema type mismatches; this forces clean types.
+    structured = llm.with_structured_output(Form11, method="json_schema")
     return structured.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)])
 
 
