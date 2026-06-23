@@ -63,6 +63,13 @@ app = FastAPI(
     ),
     version="1.0.0",
     contact={"name": "pdf-to-json"},
+    openapi_tags=[
+        {"name": "Claude", "description": f"Anthropic Claude ({settings.anthropic_model}) — the live default engine."},
+        {"name": "Google Gemini", "description": f"Google Gemini ({settings.gemini_model}) — vision + text extraction."},
+        {"name": "Groq", "description": f"Groq ({settings.groq_model}) — fast, generous free tier."},
+        {"name": "Local (Ollama)", "description": "On-prem Ollama models — free + private, slower on CPU."},
+        {"name": "meta", "description": "Health and service status."},
+    ],
 )
 
 
@@ -80,7 +87,7 @@ def health() -> dict:
 @app.post(
     "/extract-grouped",
     response_model=list[MPRRecord],
-    tags=["extraction"],
+    tags=["Claude"],
     summary=f"MPR PDF -> grouped JSON  ·  Claude ({settings.anthropic_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -112,7 +119,7 @@ async def extract_grouped_endpoint(
 @app.post(
     "/extract-workorder",
     response_model=WorkOrder,
-    tags=["extraction"],
+    tags=["Claude"],
     summary=f"Work Order PDF -> structured JSON  ·  Claude ({settings.anthropic_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -139,7 +146,7 @@ async def extract_workorder_endpoint(
 @app.post(
     "/extract-payment-advice",
     response_model=PaymentAdvice,
-    tags=["extraction"],
+    tags=["Claude"],
     summary=f"Payment Advice PDF -> JSON  ·  Claude ({settings.anthropic_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -167,7 +174,7 @@ async def extract_payment_advice_endpoint(
 @app.post(
     "/extract-form11",
     response_model=Form11,
-    tags=["extraction"],
+    tags=["Claude"],
     summary=f"EPF Form 11 (Declaration) -> JSON  ·  Claude ({settings.anthropic_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -195,7 +202,7 @@ async def extract_form11_endpoint(
 @app.post(
     "/extract-form11-groq",
     response_model=Form11,
-    tags=["extraction"],
+    tags=["Groq"],
     summary=f"EPF Form 11 (Declaration) -> JSON  ·  Groq ({settings.groq_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -221,7 +228,7 @@ async def extract_form11_groq_endpoint(
 
 @app.post(
     "/extract-workorder-with-local-llm",
-    tags=["extraction"],
+    tags=["Local (Ollama)"],
     summary=f"Work Order PDF -> JSON  ·  local Ollama ({settings.ollama_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -249,7 +256,7 @@ async def extract_workorder_local_endpoint(
 
 @app.post(
     "/extract-grouped-qwen3-vl",
-    tags=["extraction"],
+    tags=["Local (Ollama)"],
     summary=f"MPR PDF -> grouped JSON  ·  local vision Ollama ({settings.ollama_vision_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -274,7 +281,7 @@ async def extract_grouped_qwen3vl_endpoint(
 @app.post(
     "/extract-grouped-gemini",
     response_model=list[MPRRecord],
-    tags=["extraction"],
+    tags=["Google Gemini"],
     summary=f"MPR PDF -> grouped JSON  ·  Google Gemini ({settings.gemini_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -299,7 +306,7 @@ async def extract_grouped_gemini_endpoint(
 @app.post(
     "/extract-workorder-gemini",
     response_model=WorkOrder,
-    tags=["extraction"],
+    tags=["Google Gemini"],
     summary=f"Work Order PDF -> JSON  ·  Google Gemini ({settings.gemini_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -324,7 +331,7 @@ async def extract_workorder_gemini_endpoint(
 @app.post(
     "/extract-grouped-groq",
     response_model=list[MPRRecord],
-    tags=["extraction"],
+    tags=["Groq"],
     summary=f"MPR PDF -> grouped JSON  ·  Groq ({settings.groq_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -350,7 +357,7 @@ async def extract_grouped_groq_endpoint(
 @app.post(
     "/extract-workorder-groq",
     response_model=WorkOrder,
-    tags=["extraction"],
+    tags=["Groq"],
     summary=f"Work Order PDF -> JSON  ·  Groq ({settings.groq_model})",
     dependencies=[Depends(require_api_key)],
 )
@@ -375,7 +382,7 @@ async def extract_workorder_groq_endpoint(
 @app.post(
     "/extract-payment-advice-groq",
     response_model=PaymentAdvice,
-    tags=["extraction"],
+    tags=["Groq"],
     summary=f"Payment Advice PDF -> JSON  ·  Groq ({settings.groq_model})",
     dependencies=[Depends(require_api_key)],
 )
