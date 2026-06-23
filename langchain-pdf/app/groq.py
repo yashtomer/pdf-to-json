@@ -20,6 +20,7 @@ from langchain_groq import ChatGroq
 from .config import settings
 from .extractor import SYSTEM_PROMPT as MPR_PROMPT
 from .extractor import _merge_by_work_order_month, _pdf_to_image_blocks
+from .mpr_reconcile import reconcile_multimonth_leaves
 from .payment_advice import SYSTEM_PROMPT as PA_PROMPT
 from .payment_advice import run_payment_advice
 from .schemas import MPRRecord, MPRDocument, PaymentAdvice, WorkOrder
@@ -66,7 +67,11 @@ def extract_grouped_groq(pdf_path: Path) -> list[MPRRecord]:
     result: MPRDocument = _structured(MPRDocument).invoke(
         [SystemMessage(content=MPR_PROMPT), HumanMessage(content=content)]
     )
-    return _merge_by_work_order_month(result.records)
+    records = _merge_by_work_order_month(result.records)
+    # Deterministically fix the per-month split for multi-month MPRs: Llama reads
+    # the certificate dates but mis-buckets them. No-op when there's no text layer
+    # (scanned photos) or the certificate total disagrees with the model.
+    return reconcile_multimonth_leaves(text, records)
 
 
 def extract_workorder_groq(pdf_path: Path) -> WorkOrder:
