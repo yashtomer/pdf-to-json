@@ -17,7 +17,9 @@ from pathlib import Path
 
 from .config import settings
 from .extractor import SYSTEM_PROMPT, _merge_by_work_order_month, load_page_images
+from .mpr_reconcile import reconcile_multimonth_leaves
 from .schemas import MPRDocument
+from .workorder import _pdf_text
 
 _JSON_INSTRUCTION = (
     'Return ONLY a JSON object (no markdown fences, no prose) of this exact shape: '
@@ -82,6 +84,8 @@ def extract_grouped_vision(pdf_path: Path) -> dict:
     data = _parse_json(resp["response"])
     records = MPRDocument(**data).records
     records = _merge_by_work_order_month(records)
+    # Deterministically fix the per-month split for multi-month MPRs (see groq.py).
+    records = reconcile_multimonth_leaves(_pdf_text(pdf_path), records)
     # drop rows whose name never came through (mirror the Claude path's cleanup)
     for r in records:
         r.employees = [e for e in r.employees if e.employee_name]

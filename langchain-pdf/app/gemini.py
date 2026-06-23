@@ -16,9 +16,10 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from .config import settings
 from .extractor import SYSTEM_PROMPT as MPR_PROMPT
 from .extractor import _merge_by_work_order_month, _pdf_to_image_blocks
+from .mpr_reconcile import reconcile_multimonth_leaves
 from .schemas import MPRRecord, MPRDocument, WorkOrder
 from .workorder import SYSTEM_PROMPT as WO_PROMPT
-from .workorder import run_workorder
+from .workorder import _pdf_text, run_workorder
 
 
 def _structured(schema):
@@ -44,7 +45,9 @@ def extract_grouped_gemini(pdf_path: Path) -> list[MPRRecord]:
     result: MPRDocument = _structured(MPRDocument).invoke(
         [SystemMessage(content=MPR_PROMPT), HumanMessage(content=content)]
     )
-    return _merge_by_work_order_month(result.records)
+    records = _merge_by_work_order_month(result.records)
+    # Deterministically fix the per-month split for multi-month MPRs (see groq.py).
+    return reconcile_multimonth_leaves(_pdf_text(pdf_path), records)
 
 
 def extract_workorder_gemini(pdf_path: Path) -> WorkOrder:

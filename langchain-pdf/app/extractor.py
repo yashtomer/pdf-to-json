@@ -17,6 +17,7 @@ from pdf2image import convert_from_path
 from PIL import Image
 
 from .config import settings
+from .mpr_reconcile import reconcile_multimonth_leaves
 from .schemas import MPRRecord, MPRDocument
 
 
@@ -151,7 +152,12 @@ def extract_grouped(pdf_path: Path) -> list[MPRRecord]:
     result: MPRDocument = structured.invoke(
         [_system_message(), HumanMessage(content=content)]
     )
-    return _merge_by_work_order_month(result.records)
+    records = _merge_by_work_order_month(result.records)
+    # Deterministically fix the per-month split for multi-month MPRs (the model can
+    # mis-bucket Leave Adjustment Certificate dates). No-op for single-month docs or
+    # scans with no text layer. Deferred import: workorder imports from this module.
+    from .workorder import _pdf_text
+    return reconcile_multimonth_leaves(_pdf_text(pdf_path), records)
 
 
 def _merge_by_work_order_month(records: list[MPRRecord]) -> list[MPRRecord]:
