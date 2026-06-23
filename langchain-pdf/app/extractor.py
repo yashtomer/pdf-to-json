@@ -45,14 +45,23 @@ Follow these rules exactly:
    the Remarks text, NOT a date, and NOT an attendance time like '07:44'. A cell
    like '2 (02.01.2026 & 19.01.2026)' means 2. '-' or blank means 0. Halves like
    0.5 / 1.5 are valid.
-3. MULTI-MONTH: if the month is a range like 'January to March 2026' and the
-   document includes per-employee Leave Adjustment Certificates, output one record
-   per month. For each employee, in each month, count ONLY the leave entries whose
-   DATES fall in that specific month, taken from THAT employee's certificate. Do
-   not reuse a value across months, and do not split the combined MPR total evenly.
-   A month with no leave entry for that employee is 0. Sum half-days as written
-   (e.g. two 0.5-day leaves in a month = 1.0; one 0.5-day = 0.5). Re-check each
-   value against the certificate dates before answering.
+3. MULTI-MONTH: the report covers MULTIPLE months when the month / 'MPR for the
+   Month' is a RANGE — written with 'to' ('January to March 2026') OR joined by
+   '&', 'and', '-' or ',' ('April & May 2026'). When it is a range AND the document
+   includes per-employee Leave Adjustment Certificates, output ONE RECORD PER MONTH
+   (e.g. one 'April 2026' record and one 'May 2026' record).
+   - The summary table's 'Absent' / 'Total Absence' column is the COMBINED total for
+     the WHOLE range (e.g. 'Three & Half day' = 3.5 across both months). NEVER put
+     that combined figure into a single month. Derive each month's leaves ONLY from
+     that employee's Leave Adjustment Certificate, counting the dated leave entries
+     that fall in THAT month (15.04.2026 → April; 13.05.2026 → May). Half-days count
+     0.5; sum them within the month. A month's values must add up — across all
+     months — to that employee's combined 'Absent' total.
+   - EVERY employee appears in EVERY month's record. An employee with no certificate
+     (or whose 'Absent' is Nil / '-' / blank) has 0 leaves — still list them in each
+     month.
+   - Do not reuse a value across months and do not split the combined total evenly.
+     Re-check each value against the certificate dates before answering.
 4. GROUPED NAMES: if one cell lists several people as a numbered list
    ('1. A 2. B 3. C') sharing one designation, output one employee per name.
 5. CONTINUATION PAGES: a table that continues onto the next page (same work order,

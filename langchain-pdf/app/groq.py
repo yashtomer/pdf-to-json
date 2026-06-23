@@ -24,7 +24,7 @@ from .payment_advice import SYSTEM_PROMPT as PA_PROMPT
 from .payment_advice import run_payment_advice
 from .schemas import MPRRecord, MPRDocument, PaymentAdvice, WorkOrder
 from .workorder import SYSTEM_PROMPT as WO_PROMPT
-from .workorder import run_workorder
+from .workorder import _pdf_text, run_workorder
 
 
 def _structured(schema):
@@ -44,14 +44,25 @@ def _structured(schema):
 
 
 def extract_grouped_groq(pdf_path: Path) -> list[MPRRecord]:
-    """MPR PDF -> grouped records, read from the page images by Groq (vision)."""
+    """MPR PDF -> grouped records, read from the page images by Groq (vision).
+
+    For DIGITAL PDFs we also pass the extracted text layer alongside the images.
+    Llama 4 Scout reads dates off a scanned image unreliably and tends to dump the
+    summary 'Absent' total into the first month; given the certificate TEXT it can
+    split a multi-month MPR's leaves into the correct month. Scanned MPRs (phone
+    photos) have no text layer, so this is a no-op for them — images only, as before.
+    """
     image_blocks = _pdf_to_image_blocks(pdf_path)
     if not image_blocks:
         return []
-    content = [
-        {"type": "text", "text": "Extract the MPR data from these page images."},
-        *image_blocks,
-    ]
+    prompt = "Extract the MPR data from these page images."
+    text = _pdf_text(pdf_path)
+    if len(text.strip()) >= 50:
+        prompt += (
+            " The document's extracted text is provided below — use it to read names, "
+            "dates and Leave Adjustment Certificates accurately:\n\n" + text
+        )
+    content = [{"type": "text", "text": prompt}, *image_blocks]
     result: MPRDocument = _structured(MPRDocument).invoke(
         [SystemMessage(content=MPR_PROMPT), HumanMessage(content=content)]
     )
