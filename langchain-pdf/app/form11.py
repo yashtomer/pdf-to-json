@@ -62,6 +62,9 @@ Field locations on the form:
 For the numeric fields (phone, uan_no, account_no, aadhar_no) output digits only —
 strip any spaces, dashes or separators between groups. Output ifsc and pan_no in
 uppercase with no spaces.
+
+Set ai_score to your confidence (an integer 0-100 percent) that you read the whole
+form 100% correctly — handwriting that is hard to read should lower it.
 """
 
 

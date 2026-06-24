@@ -28,6 +28,7 @@ LOCAL_PROMPT = """You extract data from a NICSI Work Order. Return ONLY JSON wit
 - tender_type: "tier_3" if HSN 998314 / items say "Tier 3", else "support_engineer".
 - wo_total_value: Grand Total, DIGITS ONLY (no commas).
 - taxable_amount: Total Amount in Rs, DIGITS ONLY.
+- ai_score: an INTEGER 0-100 — your confidence that the whole extraction is correct.
 - items: array, one object PER TABLE ROW, each with: line_no, hsn_code, description, designation_level, manpower_count, period_text, start_date, end_date (deployment From/To, exactly as printed), unit_rate (THAT ROW's Unit Rate per Month, with decimals, no commas), line_total (THAT ROW's Total Amount, no commas).
 - designation_level RULE: read the item's description. If it starts with "Level <number>" (e.g. "Level 7 (Minimum work experience...)"), set designation_level to that number as an INTEGER (e.g. 7, or 9 for "Level 9"). Only set it to null when the description has no "Level" (e.g. "Software Application Support Engineer").
 IMPORTANT: each row has its OWN unit_rate and line_total — do NOT copy row 1's numbers into row 2. Strip thousands commas (3,40,005.60 -> 340005.60).

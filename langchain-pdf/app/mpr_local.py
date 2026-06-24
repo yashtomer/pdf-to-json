@@ -24,8 +24,9 @@ from .workorder import _pdf_text
 _JSON_INSTRUCTION = (
     'Return ONLY a JSON object (no markdown fences, no prose) of this exact shape: '
     '{"records": [{"work_order": "string", "mpr_month": "Month YYYY", '
-    '"employees": [{"employee_name": "string", "designation": "string", '
-    '"leaves": 0}]}]}.'
+    '"ai_score": 0, "employees": [{"employee_name": "string", "designation": '
+    '"string", "leaves": 0}]}]}. ai_score is an integer 0-100: your confidence that '
+    'that record is 100% correct.'
 )
 
 

@@ -6,7 +6,32 @@ as extraction instructions. Keep them precise.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+
+def _coerce_ai_score(v: object) -> int:
+    """Coerce the model's self-reported confidence to an int percentage in 0-100.
+    Tolerates strings ('95'), floats (95.6) and out-of-range / junk values, so a
+    stray model output can never break the response (falls back to 0 = needs review)."""
+    try:
+        n = int(round(float(v)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, n))
+
+
+# A 0-100 confidence percentage the model self-reports. Defined once and reused by
+# every schema so all endpoints expose the same `ai_score` field + clamping.
+AIScore = Annotated[int, BeforeValidator(_coerce_ai_score)]
+
+_AI_SCORE_DESC = (
+    "Your confidence as a percentage from 0 to 100 that this was extracted 100% "
+    "correctly from the document. Use 100 only when every value is clearly legible "
+    "and certain; lower it for blurry, handwritten or ambiguous scans, or any value "
+    "you had to guess. Used downstream to decide which results need a manual check."
+)
 
 
 class Employee(BaseModel):
@@ -40,6 +65,7 @@ class MPRRecord(BaseModel):
         "Adjustment Certificates, produce one record per month with that month's "
         "leaves. Empty string if no month is present."
     )
+    ai_score: AIScore = Field(default=0, description=_AI_SCORE_DESC)
     employees: list[Employee] = Field(
         description="The employees for this work order and month."
     )
@@ -109,6 +135,7 @@ class WorkOrder(BaseModel):
     )
     items: list[WorkOrderItem] = Field(default_factory=list, description="The line items from the order table.")
     taxable_amount: str = Field(default="", description="'Total Amount in Rs.' — the sum of line taxable amounts BEFORE taxes, DIGITS ONLY, e.g. '765013'.")
+    ai_score: AIScore = Field(default=0, description=_AI_SCORE_DESC)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +158,7 @@ class PaymentAdvice(BaseModel):
     pa_amount: int = Field(default=0, description="Net amount transferred — the 'Payment being made' grand total on the Total row (AFTER TDS & GST-TDS), digits only.")
     pa_date: str = Field(default="", description="The advice/letter date as DD-MON-YYYY (expand a 2-digit year, e.g. '26-MAY-26' → '26-MAY-2026').")
     bills: list[PaymentBill] = Field(default_factory=list, description="One entry per enclosed bill row in the table.")
+    ai_score: AIScore = Field(default=0, description=_AI_SCORE_DESC)
 
 
 # ---------------------------------------------------------------------------
@@ -152,3 +180,4 @@ class Form11(BaseModel):
     account_no: str = Field(default="", description="KYC 'Bank Account No.' (digits only).")
     ifsc: str = Field(default="", description="KYC 'IFS Code', e.g. 'SBIN0020980' (uppercase letters+digits, no spaces).")
     pan_no: str = Field(default="", description="KYC 'Permanent Account Number (PAN)', a 10-char alphanumeric code, uppercase.")
+    ai_score: AIScore = Field(default=0, description=_AI_SCORE_DESC)

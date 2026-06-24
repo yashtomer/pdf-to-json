@@ -25,3 +25,5 @@ out_all/
 .p3.*
 .verify_all.py
 surya_extractor/native-server.log
+
+.superpowers/

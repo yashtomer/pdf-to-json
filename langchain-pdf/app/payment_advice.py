@@ -37,6 +37,9 @@ fields. You are given the extracted text (and, as a fallback, the page images).
       S…/C… code in the neighbouring column).
 
 Read values exactly as printed; never invent. Include every bill row in order.
+
+Set ai_score to your confidence (an integer 0-100 percent) that the whole payment
+advice was read 100% correctly — lower it for blurry scans or any value you guessed.
 """
 
 

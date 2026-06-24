@@ -180,6 +180,10 @@ taxes (C); taxable_amount and line_total = 'Total Amount' (E = A×B×C); start_d
 and end_date = the From/To of 'Date of Deployment' (D). Strip thousands commas
 from all numbers (Indian grouping like 3,40,005.60 → 340005.60). Read values
 exactly as printed; never invent. doc_type is always 'work_order'.
+
+Set ai_score to your confidence (an integer 0-100 percent) that the whole work order
+was read 100% correctly — use 100 only when every field is clearly legible; lower it
+for blurry scans or any value you had to guess.
 """
 
 

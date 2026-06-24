@@ -72,6 +72,9 @@ Follow these rules exactly:
 7. Names may be ALL-CAPS — keep them as printed. If a name is truly unreadable,
    use an empty string; never invent names or numbers.
 8. Format mpr_month as 'Month YYYY' (e.g. 'April 2026').
+9. ai_score: for EACH record set ai_score to your confidence (an integer 0-100
+   percent) that THAT record's values are 100% correct — use 100 only when every
+   value is clearly legible; lower it for blurry/ambiguous pages or values you guessed.
 """
 
 
