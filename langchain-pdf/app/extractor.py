@@ -75,6 +75,10 @@ Follow these rules exactly:
 9. ai_score: for EACH record set ai_score to your confidence (an integer 0-100
    percent) that THAT record's values are 100% correct — use 100 only when every
    value is clearly legible; lower it for blurry/ambiguous pages or values you guessed.
+10. signature_date: the date written next to the Reporting Officer's signature /
+   stamp at the bottom ('Signature with date of the Reporting officer'), as printed
+   (e.g. '02/07/2026'). It is often HANDWRITTEN on or over the stamp — read it from
+   the image. Put the same value on every record from that page; '' if absent.
 """
 
 

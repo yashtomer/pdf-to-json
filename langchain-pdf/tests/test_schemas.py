@@ -37,6 +37,25 @@ def test_ai_score_is_serialized():
     assert Form11(ai_score=72).model_dump()["ai_score"] == 72
 
 
+def _sig(month, sig):
+    return MPRRecord(work_order="X", mpr_month=month, signature_date=sig, employees=[]).signature_date
+
+
+def test_signature_date_kept_when_year_matches():
+    assert _sig("June 2026", "02/07/2026") == "02/07/2026"   # Claude/Gemini read
+    assert _sig("December 2026", "05/01/2027") == "05/01/2027"  # signed next Jan, within 1yr
+
+
+def test_signature_date_blanked_when_year_implausible():
+    assert _sig("June 2026", "06/21/2024") == ""             # Groq misread -> blanked
+    assert _sig("June 2026", "02/07/2029") == ""
+
+
+def test_signature_date_left_alone_when_unverifiable():
+    assert _sig("", "02/07/2026") == "02/07/2026"            # no month -> can't judge
+    assert _sig("June 2026", "02/07/26") == "02/07/26"       # 2-digit year -> leave it
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

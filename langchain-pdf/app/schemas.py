@@ -6,9 +6,10 @@ as extraction instructions. Keep them precise.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 
 def _coerce_ai_score(v: object) -> int:
@@ -65,10 +66,30 @@ class MPRRecord(BaseModel):
         "Adjustment Certificates, produce one record per month with that month's "
         "leaves. Empty string if no month is present."
     )
+    signature_date: str = Field(
+        default="",
+        description="The date written next to the Reporting Officer's signature / "
+        "stamp at the bottom ('Signature with date of the Reporting officer'), as "
+        "printed (e.g. '02/07/2026'). It is often HANDWRITTEN on or near the stamp, "
+        "so read it from the image. Use the same value for every record on the page. "
+        "Empty string if no date is present.",
+    )
     ai_score: AIScore = Field(default=0, description=_AI_SCORE_DESC)
     employees: list[Employee] = Field(
         description="The employees for this work order and month."
     )
+
+    @model_validator(mode="after")
+    def _guard_signature_date(self):
+        # A signature is dated around the report month. If a (weaker) model returns a
+        # signature_date whose year is >1 off from the MPR month's year, it misread
+        # the handwriting — blank it rather than surface a confidently-wrong date.
+        if self.signature_date and self.mpr_month:
+            sig = re.findall(r"20\d{2}", self.signature_date)
+            mon = re.findall(r"20\d{2}", self.mpr_month)
+            if sig and mon and abs(int(sig[-1]) - int(mon[-1])) > 1:
+                self.signature_date = ""
+        return self
 
 
 class MPRDocument(BaseModel):
