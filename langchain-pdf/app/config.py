@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
 
+    # NVIDIA NIM — OpenAI-compatible hosted inference (integrate.api.nvidia.com).
+    # Default is a vision-capable Llama 4 Scout (reads scanned MPRs / Form 11s).
+    nvidia_api_key: str = ""
+    nvidia_model: str = "meta/llama-4-scout-17b-16e-instruct"
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8001

@@ -19,6 +19,9 @@ langchain-google-genai>=2.0
 # Groq (langchain) — fast hosted Llama 4 (vision), used by /extract-form11-groq
 langchain-groq>=0.2
 
+# NVIDIA NIM (langchain) — hosted Llama 4 vision on integrate.api.nvidia.com
+langchain-nvidia-ai-endpoints>=0.3
+
 # PDF -> images
 pdf2image>=1.17               # needs the system package `poppler` installed
 pillow>=10.0

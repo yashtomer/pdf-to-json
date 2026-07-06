@@ -119,3 +119,19 @@ def _invoke_groq(content) -> Form11:
 
 def extract_form11_groq(pdf_path: Path) -> Form11:
     return run_form11(pdf_path, _invoke_groq)
+
+
+def _invoke_nvidia(content) -> Form11:
+    """Same prompt + schema as the Claude/Groq paths, read by a vision model on
+    NVIDIA NIM (langchain-nvidia-ai-endpoints)."""
+    from langchain_nvidia_ai_endpoints import ChatNVIDIA
+
+    if not settings.nvidia_api_key:
+        raise RuntimeError("NVIDIA_API_KEY is not set. Add it to the .env file and restart.")
+    llm = ChatNVIDIA(model=settings.nvidia_model, api_key=settings.nvidia_api_key, temperature=0)
+    structured = llm.with_structured_output(Form11)
+    return structured.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)])
+
+
+def extract_form11_nvidia(pdf_path: Path) -> Form11:
+    return run_form11(pdf_path, _invoke_nvidia)

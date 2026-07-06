@@ -19,7 +19,7 @@ from .extractor import extract_grouped
 from .schemas import Form11, MPRRecord, PaymentAdvice, WorkOrder
 from .workorder import extract_workorder
 from .payment_advice import extract_payment_advice
-from .form11 import extract_form11, extract_form11_groq
+from .form11 import extract_form11, extract_form11_groq, extract_form11_nvidia
 from .workorder_local import extract_workorder_local
 from .mpr_local import extract_grouped_vision
 from .gemini import extract_grouped_gemini, extract_workorder_gemini
@@ -27,6 +27,11 @@ from .groq import (
     extract_grouped_groq,
     extract_payment_advice_groq,
     extract_workorder_groq,
+)
+from .nvidia import (
+    extract_grouped_nvidia,
+    extract_payment_advice_nvidia,
+    extract_workorder_nvidia,
 )
 
 # API-key auth on the extraction endpoint. Callers send `X-API-Key: <key>`.
@@ -67,6 +72,7 @@ app = FastAPI(
         {"name": "Claude", "description": f"Anthropic Claude ({settings.anthropic_model}) — the live default engine."},
         {"name": "Google Gemini", "description": f"Google Gemini ({settings.gemini_model}) — vision + text extraction."},
         {"name": "Groq", "description": f"Groq ({settings.groq_model}) — fast, generous free tier."},
+        {"name": "NVIDIA NIM", "description": f"NVIDIA NIM ({settings.nvidia_model}) — hosted GPU inference via integrate.api.nvidia.com (build.nvidia.com)."},
         {"name": "Local (Ollama)", "description": "On-prem Ollama models — free + private, slower on CPU."},
         {"name": "meta", "description": "Health and service status."},
     ],
@@ -400,6 +406,110 @@ async def extract_payment_advice_groq_endpoint(
         return await asyncio.to_thread(extract_payment_advice_groq, tmp_path)
     except Exception as e:
         raise HTTPException(500, f"Groq extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA NIM — same four doc types, read on NVIDIA's hosted models
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/extract-grouped-nvidia",
+    response_model=list[MPRRecord],
+    tags=["NVIDIA NIM"],
+    summary=f"MPR PDF -> grouped JSON  ·  NVIDIA NIM ({settings.nvidia_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_grouped_nvidia_endpoint(
+    file: UploadFile = File(..., description="The MPR PDF (scanned ok)."),
+) -> list[MPRRecord]:
+    """Same grouped MPR output as /extract-grouped, read by a vision model on NVIDIA NIM."""
+    if not settings.nvidia_api_key:
+        raise HTTPException(503, "NVIDIA_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_grouped_nvidia, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"NVIDIA extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-workorder-nvidia",
+    response_model=WorkOrder,
+    tags=["NVIDIA NIM"],
+    summary=f"Work Order PDF -> JSON  ·  NVIDIA NIM ({settings.nvidia_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_workorder_nvidia_endpoint(
+    file: UploadFile = File(..., description="The NICSI Work Order PDF."),
+) -> WorkOrder:
+    """Same work-order output as /extract-workorder, via NVIDIA NIM."""
+    if not settings.nvidia_api_key:
+        raise HTTPException(503, "NVIDIA_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_workorder_nvidia, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"NVIDIA extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-payment-advice-nvidia",
+    response_model=PaymentAdvice,
+    tags=["NVIDIA NIM"],
+    summary=f"Payment Advice PDF -> JSON  ·  NVIDIA NIM ({settings.nvidia_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_payment_advice_nvidia_endpoint(
+    file: UploadFile = File(..., description="The NICSI Payment Advice (RTGS/NEFT transfer) PDF."),
+) -> PaymentAdvice:
+    """Same Payment Advice output as /extract-payment-advice, via NVIDIA NIM."""
+    if not settings.nvidia_api_key:
+        raise HTTPException(503, "NVIDIA_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_payment_advice_nvidia, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"NVIDIA extraction failed: {e!r}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/extract-form11-nvidia",
+    response_model=Form11,
+    tags=["NVIDIA NIM"],
+    summary=f"EPF Form 11 (Declaration) -> JSON  ·  NVIDIA NIM ({settings.nvidia_model})",
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_form11_nvidia_endpoint(
+    file: UploadFile = File(..., description="The EPF Form 11 (Declaration Form) PDF or image."),
+) -> Form11:
+    """Same Form 11 output as /extract-form11, read by a vision model on NVIDIA NIM."""
+    if not settings.nvidia_api_key:
+        raise HTTPException(503, "NVIDIA_API_KEY not set — add it to .env and restart.")
+    _validate_upload(file)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return await asyncio.to_thread(extract_form11_nvidia, tmp_path)
+    except Exception as e:
+        raise HTTPException(500, f"NVIDIA extraction failed: {e!r}")
     finally:
         tmp_path.unlink(missing_ok=True)
 
