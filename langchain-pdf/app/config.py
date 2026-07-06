@@ -46,7 +46,8 @@ class Settings(BaseSettings):
     # NVIDIA NIM — OpenAI-compatible hosted inference (integrate.api.nvidia.com).
     # Default is a vision-capable Llama 4 Scout (reads scanned MPRs / Form 11s).
     nvidia_api_key: str = ""
-    nvidia_model: str = "meta/llama-4-scout-17b-16e-instruct"
+    nvidia_model: str = "meta/llama-4-maverick-17b-128e-instruct"
+    nvidia_timeout: int = 180     # vision + JSON on NIM can be slow; allow minutes
 
     # API server
     api_host: str = "0.0.0.0"

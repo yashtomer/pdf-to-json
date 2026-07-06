@@ -121,16 +121,20 @@ def extract_form11_groq(pdf_path: Path) -> Form11:
     return run_form11(pdf_path, _invoke_groq)
 
 
-def _invoke_nvidia(content) -> Form11:
-    """Same prompt + schema as the Claude/Groq paths, read by a vision model on
-    NVIDIA NIM (langchain-nvidia-ai-endpoints)."""
-    from langchain_nvidia_ai_endpoints import ChatNVIDIA
+_NVIDIA_F11_SHAPE = (
+    'Return ONLY a JSON object (no markdown fences, no prose) with exactly these keys: '
+    '{"employee_name":"","uan_no":"","aadhar_no":"","email":"","phone":"","account_no":"",'
+    '"ifsc":"","pan_no":"","ai_score":0}'
+)
 
-    if not settings.nvidia_api_key:
-        raise RuntimeError("NVIDIA_API_KEY is not set. Add it to the .env file and restart.")
-    llm = ChatNVIDIA(model=settings.nvidia_model, api_key=settings.nvidia_api_key, temperature=0)
-    structured = llm.with_structured_output(Form11)
-    return structured.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)])
+
+def _invoke_nvidia(content) -> Form11:
+    """Read the Form 11 via NVIDIA NIM. NIM vision models are unreliable with
+    structured-output tool-calling, so we prompt for JSON and parse it (like the local
+    paths) — via the shared helper in nvidia.py."""
+    from .nvidia import nvidia_json_invoke
+
+    return Form11(**nvidia_json_invoke(SYSTEM_PROMPT, content, _NVIDIA_F11_SHAPE))
 
 
 def extract_form11_nvidia(pdf_path: Path) -> Form11:
