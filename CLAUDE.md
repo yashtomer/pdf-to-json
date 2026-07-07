@@ -31,15 +31,16 @@ POST /extract-grouped   (multipart: file=<pdf>)
       "employees": [ { "employee_name": "...", "designation": "...", "leaves": 0 }, ... ] }, ... ]
 ```
 
-**Twelve extraction endpoints** (each accepts a **PDF or image** — jpg/png/…; MPRs
+**Sixteen extraction endpoints** (each accepts a **PDF or image** — jpg/png/…; MPRs
 and Form 11s are often phone photos). `-gemini` = Google Gemini, `-groq` = Groq
-(Llama 4 Scout, vision), `-with-local-llm` / `-qwen3-vl` = local Ollama; the rest
-= Claude. **Every doc type now has a Groq variant** (`-groq`):
-- MPR: `POST /extract-grouped` (Claude), `/extract-grouped-gemini`, `/extract-grouped-groq`, `/extract-grouped-qwen3-vl`
-- Work Order: `POST /extract-workorder` (Claude), `/extract-workorder-gemini`, `/extract-workorder-groq`, `/extract-workorder-with-local-llm`
+(Llama 4 Scout, vision), `-nvidia` = NVIDIA NIM (Llama 4 Maverick, vision, on
+integrate.api.nvidia.com), `-with-local-llm` / `-qwen3-vl` = local Ollama; the rest
+= Claude. **Every doc type has a Groq AND an NVIDIA NIM variant:**
+- MPR: `POST /extract-grouped` (Claude), `/extract-grouped-gemini`, `/extract-grouped-groq`, `/extract-grouped-nvidia`, `/extract-grouped-qwen3-vl`
+- Work Order: `POST /extract-workorder` (Claude), `/extract-workorder-gemini`, `/extract-workorder-groq`, `/extract-workorder-nvidia`, `/extract-workorder-with-local-llm`
   — auto-detects `tender_type` (`tier_3` vs `support_engineer` vs `gis`).
-- Payment Advice: `POST /extract-payment-advice` (Claude), `/extract-payment-advice-groq`.
-- Form 11 (EPF declaration): `POST /extract-form11` (Claude), `/extract-form11-groq`.
+- Payment Advice: `POST /extract-payment-advice` (Claude), `/extract-payment-advice-groq`, `/extract-payment-advice-nvidia`.
+- Form 11 (EPF declaration): `POST /extract-form11` (Claude), `/extract-form11-groq`, `/extract-form11-nvidia`.
 
 All extraction endpoints require an **`X-API-Key`** header (keys in
 `API_AUTH_KEYS`, constant-time compared). Open: `GET /health`, `GET /docs`.
@@ -59,17 +60,18 @@ taxable_amount ← sum of line totals; scanned docs ← N-run majority vote
 
 | File | Role |
 |---|---|
-| `app/main.py` | FastAPI: the 12 extraction endpoints + `/health` + Swagger. `_validate_upload` accepts pdf/jpg/png/…; `require_api_key` enforces `X-API-Key`. Blocking calls run in a threadpool. |
+| `app/main.py` | FastAPI: the 16 extraction endpoints + `/health` + Swagger. `_validate_upload` accepts pdf/jpg/png/…; `require_api_key` enforces `X-API-Key`. Blocking calls run in a threadpool. |
 | `app/extractor.py` | MPR via Claude: `load_page_images` (PDF→pdf2image OR image→PIL, by `%PDF-` magic) → downscaled JPEG → one `with_structured_output(MPRDocument)` call. Domain rules in `SYSTEM_PROMPT`. `temperature=0`. `_merge_by_work_order_month` consolidates (work_order, month). |
 | `app/workorder.py` | Work Order via Claude: `pdftotext -layout` (image fallback for scans, `WORKORDER_SCAN_RUNS` majority vote) → `WorkOrder`. `reconcile_workorder` = the deterministic reliability layers (level from description + rate-ordering, unit_rate + taxable_amount arithmetic). Shared `run_workorder` used by the Gemini path too. |
 | `app/gemini.py` | MPR (vision) + Work Order (text/image) via Google Gemini (langchain-google-genai). |
 | `app/groq.py` | MPR (vision) + Work Order + Payment Advice via Groq (langchain-groq, Llama 4 Scout). Reuses each Claude path's prompt + shared pipeline. Uses `with_structured_output(method="json_schema")` — Groq's default tool-calling 400s on a strict type mismatch (e.g. Llama emitting an int field as a string); json_schema constrains the output to the right types. (Form 11's Groq path is in form11.py.) |
+| `app/nvidia.py` | MPR (vision) + Work Order + Payment Advice via **NVIDIA NIM** (langchain-nvidia-ai-endpoints, ChatNVIDIA, Llama 4 Maverick on integrate.api.nvidia.com). NIM vision models are unreliable with `with_structured_output` (fields silently drop), so this path prompts for JSON of the target shape and parses it — like the local Ollama paths. `nvidia_json_invoke` is shared with Form 11's NVIDIA path in form11.py. Reuses each Claude path's prompt + pipeline + reconciliation. `NVIDIA_TIMEOUT` (180s) — vision+JSON on NIM exceeds the 60s client default. |
 | `app/payment_advice.py` | Payment Advice via Claude: `pdftotext -layout` (image fallback) → `PaymentAdvice` (net `pa_amount`, `pa_date`, enclosed `bills[]` mapping `bill_no`→`work_order`). |
-| `app/form11.py` | EPF **Form 11** (hand-filled scan) via Claude **or** Groq (Llama 4 Scout vision); same prompt + schema for both. `_normalize` = deterministic clean-up (digits-only IDs, space-free email, PAN-shape corrector that only fixes an invalid PAN). |
+| `app/form11.py` | EPF **Form 11** (hand-filled scan) via Claude, Groq (Llama 4 Scout vision), **or** NVIDIA NIM (manual-JSON via `nvidia_json_invoke`); same prompt + schema. `_normalize` = deterministic clean-up (digits-only IDs, space-free email, PAN-shape corrector that only fixes an invalid PAN). |
 | `app/mpr_local.py` | MPR via local Ollama **vision** (qwen3-vl); no `format=json` (returns empty) — JSON parsed from the reply; dynamic `num_ctx` for multi-page. |
 | `app/workorder_local.py` | Work Order via local Ollama **text** (qwen2.5:14b); raw `/api/generate` + `num_ctx=16384`. |
 | `app/schemas.py` | Pydantic models — also drive structured output. `WorkOrder`/`WorkOrderItem` lenient (defaults + `coerce_numbers_to_str`) for local JSON. |
-| `app/config.py` | `.env` → typed settings (Anthropic, Gemini, Groq, Ollama, auth, ensemble, DPI). |
+| `app/config.py` | `.env` → typed settings (Anthropic, Gemini, Groq, NVIDIA NIM, Ollama, auth, ensemble, DPI). |
 | `batch_extract.py` | Bulk run via Anthropic Message Batches API (**-50%**) for the monthly job. |
 | `Dockerfile` / `docker-compose.yml` | python:3.12-slim + poppler; runs on host **8080** (same as Surya); `app/` bind-mounted (no-rebuild code changes); `restart: unless-stopped` + label-scoped `autoheal`. **`.env` changes need `docker compose up -d` (not `restart`).** |
 
