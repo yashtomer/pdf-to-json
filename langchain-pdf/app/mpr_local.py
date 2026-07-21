@@ -24,10 +24,11 @@ from .workorder import _pdf_text
 _JSON_INSTRUCTION = (
     'Return ONLY a JSON object (no markdown fences, no prose) of this exact shape: '
     '{"records": [{"work_order": "string", "mpr_month": "Month YYYY", '
-    '"signature_date": "string", "ai_score": 0, "employees": [{"employee_name": '
-    '"string", "designation": "string", "leaves": 0}]}]}. signature_date is the date '
-    'by the reporting officer signature/stamp; ai_score is an integer 0-100: your '
-    'confidence that that record is 100% correct.'
+    '"signature_date": "string", "rejected": false, "rejection_reason": "", '
+    '"ai_score": 0, "employees": [{"employee_name": "string", "designation": '
+    '"string", "leaves": 0}]}]}. rejected is true ONLY if a printed value (e.g. the '
+    'Date of Joining) was overwritten by hand; signature_date is the date by the '
+    'reporting officer signature/stamp; ai_score is an integer 0-100 confidence.'
 )
 
 

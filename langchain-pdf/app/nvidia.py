@@ -34,8 +34,9 @@ from .workorder import _pdf_text, run_workorder
 _MPR_SHAPE = (
     'Return ONLY a JSON object (no markdown fences, no prose) of exactly this shape: '
     '{"records":[{"work_order":"string","mpr_month":"Month YYYY","signature_date":'
-    '"date as printed or empty string","ai_score":0,"employees":[{"employee_name":'
-    '"string","designation":"string","leaves":0}]}]}'
+    '"date as printed or empty string","rejected":false,"rejection_reason":"",'
+    '"ai_score":0,"employees":[{"employee_name":"string","designation":"string",'
+    '"leaves":0}]}]}'
 )
 _WO_SHAPE = (
     'Return ONLY a JSON object (no markdown fences, no prose) of exactly this shape: '

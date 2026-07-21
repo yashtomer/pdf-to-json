@@ -79,6 +79,13 @@ Follow these rules exactly:
    stamp at the bottom ('Signature with date of the Reporting officer'), as printed
    (e.g. '02/07/2026'). It is often HANDWRITTEN on or over the stamp — read it from
    the image. Put the same value on every record from that page; '' if absent.
+11. rejected / rejection_reason: set rejected=true when a normally-PRINTED value —
+   above all the 'Date of Joining' — has been altered or overwritten BY HAND (a
+   handwritten digit/date written on top of, above or beside the printed one). That
+   means the MPR was tampered with → invalid; give a short rejection_reason (e.g.
+   'Date of Joining overwritten by hand'). Do NOT flag legitimate handwriting (the
+   officer's signature/date, or leave certificates). Otherwise rejected=false and
+   rejection_reason=''. Apply the same rejected flag to every record on the page.
 """
 
 

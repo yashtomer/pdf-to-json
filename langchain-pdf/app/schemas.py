@@ -74,6 +74,20 @@ class MPRRecord(BaseModel):
         "so read it from the image. Use the same value for every record on the page. "
         "Empty string if no date is present.",
     )
+    rejected: bool = Field(
+        default=False,
+        description="True if this MPR looks TAMPERED / invalid — specifically when a "
+        "normally-PRINTED value (above all the 'Date of Joining') has been altered or "
+        "overwritten BY HAND: a handwritten digit or date on top of, above or beside the "
+        "printed one. Do NOT flag legitimately handwritten areas (the reporting officer's "
+        "signature/date, or Leave Adjustment Certificates) — only a printed field that "
+        "has been hand-corrected. False for a clean, untampered MPR.",
+    )
+    rejection_reason: str = Field(
+        default="",
+        description="If rejected is true, a short reason (e.g. 'Date of Joining "
+        "overwritten by hand'). Empty string when rejected is false.",
+    )
     ai_score: AIScore = Field(default=0, description=_AI_SCORE_DESC)
     employees: list[Employee] = Field(
         description="The employees for this work order and month."
